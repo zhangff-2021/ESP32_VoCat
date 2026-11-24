@@ -194,7 +194,7 @@ size_t proto_build_preconnect_auth_frame(char *buf, size_t buf_size, const char 
     if (buf_size <= needed) { buf[0] = 0; return 0; }
     memcpy(buf + length - 1, suffix, sizeof(suffix) - 1);
     buf[needed] = 0;
-    return needed - 1;
+    return needed;
 }
 
 static bool reminder_task_id_valid(const char *id)
