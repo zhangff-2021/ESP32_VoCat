@@ -576,7 +576,10 @@ esp_err_t ws_service_activate_preconnect(void)
     if (!client || !credentials || state != WS_STATE_PRECONNECTED) return ESP_ERR_INVALID_STATE;
     preconnect_auth_sent = false;
     preconnect_expires_in = 0;
-    return ws_service_authenticate();
+    state = WS_STATE_AUTHING;
+    esp_err_t err = ws_service_authenticate();
+    if (err != ESP_OK) state = WS_STATE_PRECONNECTED;
+    return err;
 }
 
 uint32_t ws_service_get_preconnect_expires_in(void) { return preconnect_expires_in; }
