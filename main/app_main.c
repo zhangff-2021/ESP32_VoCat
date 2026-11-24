@@ -141,6 +141,7 @@ static uint32_t session_started_ms;
 /* 每次主动唤醒最多因鉴权失败重新握手一次；普通网络恢复不消耗该次数。 */
 static bool voice_auth_refresh_used, awaiting_voice_auth, waiting_for_credentials;
 static int64_t retry_at_ms, auth_deadline_ms;
+static int64_t standby_retry_at_ms;
 static int64_t resume_deadline_ms;
 static bool cleanup_pending;
 static int64_t cleanup_at_ms;
@@ -194,6 +195,8 @@ static void end_conversation(const char *reason)
     d3_retry_pending = false;
     voice_auth_refresh_used = awaiting_voice_auth = waiting_for_credentials = false;
     retry_at_ms = auth_deadline_ms = resume_deadline_ms = 0;
+    standby_retry_at_ms = now_ms() + 1000;
+    d3_retry_pending = false;
     /* WS 关闭即平台挂断；不发送额外结束或 cancel 帧。 */
     stop_session_audio();
     if (wifi_service_get_state() == WIFI_STATE_GOT_IP) led_set_waiting_wake();
@@ -235,9 +238,9 @@ static void prepare_standby_websocket(void)
     if (wifi_service_get_state() != WIFI_STATE_GOT_IP || provisioning_service_is_active() ||
         session_requested) return;
     if (d3_retry_pending) {
-        if (!retry_at_ms || now_ms() < retry_at_ms) return;
+        if (!standby_retry_at_ms || now_ms() < standby_retry_at_ms) return;
         d3_retry_pending = false;
-        retry_at_ms = 0;
+        standby_retry_at_ms = 0;
     }
     /* 只有 transport 完全停止后才能换凭据/建新连接。上一次失败刚刚释放时，
      * WS 组件可能还要再走一轮 DISCONNECTED 回调；这里交给 5s 退避处理。 */
@@ -267,11 +270,11 @@ static void prepare_standby_websocket(void)
         snprintf(d3_preconnect_url, sizeof(d3_preconnect_url), "%s", configuration->websocket.url);
         snprintf(d3_preconnect_token, sizeof(d3_preconnect_token), "%s", configuration->websocket.token);
         ESP_LOGI(TAG, "D3 standby WebSocket started; sending preconnect auth");
-        retry_at_ms = 0;
+        standby_retry_at_ms = 0;
         d3_retry_pending = false;
     } else {
         ESP_LOGW(TAG, "D3 standby WebSocket preparation failed: %s", esp_err_to_name(err));
-        retry_at_ms = now_ms() + 5000;
+        standby_retry_at_ms = now_ms() + 5000;
         d3_retry_pending = true;
     }
 }
@@ -284,6 +287,7 @@ static void schedule_standby_preconnect_retry(const char *reason)
     d3_preconnect_url[0] = 0;
     d3_preconnect_token[0] = 0;
     retry_at_ms = now_ms() + 5000;
+    standby_retry_at_ms = retry_at_ms;
     d3_retry_pending = true;
     auth_deadline_ms = 0;
     awaiting_voice_auth = false;
@@ -846,6 +850,7 @@ static void main_task(void *arg)
             d3_preconnect_url[0] = 0;
             d3_preconnect_token[0] = 0;
             retry_at_ms = 0;
+            standby_retry_at_ms = 0;
             auth_deadline_ms = 0;
             (void)ws_service_disconnect();
             ESP_LOGI(TAG, "D3 preconnect refresh window reached; reconnecting");
