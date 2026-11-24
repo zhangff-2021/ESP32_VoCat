@@ -192,7 +192,8 @@ size_t proto_build_preconnect_auth_frame(char *buf, size_t buf_size, const char 
     static const char suffix[] = ",\"preconnect\":true}";
     size_t needed = length - 1 + sizeof(suffix) - 1;
     if (buf_size <= needed) { buf[0] = 0; return 0; }
-    memcpy(buf + length - 1, suffix, sizeof(suffix));
+    memcpy(buf + length - 1, suffix, sizeof(suffix) - 1);
+    buf[needed] = 0;
     return needed - 1;
 }
 
