@@ -25,9 +25,13 @@
 static unsigned checks;
 #define CHECK(expr) do { ++checks; if (!(expr)) { \
     fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #expr); exit(1); } } while (0)
-static const char *TAG = "test";
 static int64_t test_now;
 static int64_t now_ms(void) { return test_now; }
+static bool preconnect_auth_sent;
+static uint32_t preconnect_expires_in;
+static bool d3_preconnect_ready, d3_retry_pending;
+static int64_t d3_preconnect_deadline_ms;
+static char d3_preconnect_url[PROTO_WS_URL_MAX + 1], d3_preconnect_token[PROTO_AUTH_TOKEN_MAX + 1];
 int64_t esp_timer_get_time(void) { return test_now * 1000; }
 uint32_t esp_random(void) { return 1234; }
 
@@ -96,6 +100,7 @@ esp_err_t ws_service_disconnect(void)
     if (fail_stop) return ESP_FAIL;
     client_started = false; state = WS_STATE_DISCONNECTED; return ESP_OK;
 }
+ws_conn_state_t ws_service_get_state(void) { return state; }
 esp_err_t ws_service_connect(void)
 { ++connects; CHECK(credentials && credentials->token[0]); client_started = true; return ESP_OK; }
 static void end_conversation(const char *reason)
@@ -135,13 +140,15 @@ static void fresh(void)
 static void builder_checks(void)
 {
     char token[PROTO_AUTH_TOKEN_MAX + 2], buffer[PROTO_AUTH_FRAME_SIZE];
+    proto_msg_t msg;
     const char *examples[] = { "device-token", "quote\"and\\slash", "line\n\t\x01", "UTF-8-测试" };
     for (size_t i = 0; i < sizeof(examples) / sizeof(examples[0]); ++i) {
         size_t length = proto_build_auth_frame(buffer, sizeof(buffer), examples[i]);
         CHECK(length == strlen(buffer) && length > 0);
         cJSON *json = cJSON_Parse(buffer); CHECK(json != NULL);
         CHECK(strcmp(cJSON_GetObjectItemCaseSensitive(json, "type")->valuestring, "auth") == 0);
-        CHECK(strcmp(cJSON_GetObjectItemCaseSensitive(json, "token")->valuestring, examples[i]) == 0);
+        CHECK(strcmp(cJSON_GetObjectItemCaseSensitive(json, "api_key")->valuestring, examples[i]) == 0);
+        CHECK(!cJSON_GetObjectItemCaseSensitive(json, "token"));
         cJSON_Delete(json);
         CHECK(!proto_build_auth_frame(buffer, length, examples[i]) && !buffer[0]);
         CHECK(proto_build_auth_frame(buffer, length + 1, examples[i]) == length);
@@ -156,7 +163,8 @@ static void builder_checks(void)
     CHECK(preconnect_length == strlen(buffer) && preconnect_length > 0);
     cJSON *preconnect = cJSON_Parse(buffer); CHECK(preconnect != NULL);
     CHECK(!strcmp(cJSON_GetObjectItemCaseSensitive(preconnect, "type")->valuestring, "auth"));
-    CHECK(!strcmp(cJSON_GetObjectItemCaseSensitive(preconnect, "token")->valuestring, "device-token"));
+    CHECK(!strcmp(cJSON_GetObjectItemCaseSensitive(preconnect, "api_key")->valuestring, "device-token"));
+    CHECK(!cJSON_GetObjectItemCaseSensitive(preconnect, "token"));
     CHECK(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(preconnect, "preconnect")));
     cJSON_Delete(preconnect);
     CHECK(proto_parse_json("{\"type\":\"__preconnect_ready__\", \"expires_in\":600}", &msg) == PROTO_OK);
@@ -181,7 +189,6 @@ static void builder_checks(void)
         "jwt-token", "dev-123", (const char *const[]){"42", "x"}, 2));
     CHECK(!proto_build_reminder_auth_frame(reminder_buffer, sizeof(reminder_buffer),
         "jwt-token", "dev-123", task_ids, 0));
-    proto_msg_t msg;
     CHECK(proto_parse_json("{\"type\":\"error\",\"code\":2000}", &msg) == PROTO_OK);
     CHECK(proto_is_auth_error(&msg));
     CHECK(proto_parse_json("{\"type\":\"error\",\"error\":{\"code\":\"token_expired\"}}", &msg) == PROTO_OK);
@@ -216,7 +223,8 @@ static void connection_checks(void)
     CHECK(ws_service_authenticate() == ESP_OK);
     CHECK(strcmp(source_name, "HTTP/handshake/websocket.token") == 0);
     cJSON *json = cJSON_Parse(sent); CHECK(json != NULL);
-    CHECK(strcmp(cJSON_GetObjectItemCaseSensitive(json, "token")->valuestring, "device-test-only") == 0);
+    CHECK(strcmp(cJSON_GetObjectItemCaseSensitive(json, "api_key")->valuestring, "device-test-only") == 0);
+    CHECK(!cJSON_GetObjectItemCaseSensitive(json, "token"));
     cJSON_Delete(json);
     state = WS_STATE_AUTHING; CHECK(ws_service_preconnect() == ESP_OK);
     cJSON *preconnect_frame = cJSON_Parse(sent); CHECK(preconnect_frame != NULL);
@@ -283,7 +291,8 @@ static void credential_boundary_checks(void)
     CHECK(credentials->token[0] == 't' && credentials->url[18] == 'u');
     state = WS_STATE_AUTHING; CHECK(ws_service_authenticate() == ESP_OK);
     cJSON *json = cJSON_Parse(sent); CHECK(json != NULL);
-    CHECK(strlen(cJSON_GetObjectItemCaseSensitive(json, "token")->valuestring) == PROTO_AUTH_TOKEN_MAX);
+    CHECK(strlen(cJSON_GetObjectItemCaseSensitive(json, "api_key")->valuestring) == PROTO_AUTH_TOKEN_MAX);
+    CHECK(!cJSON_GetObjectItemCaseSensitive(json, "token"));
     cJSON_Delete(json);
     fail_send = true; CHECK(ws_service_authenticate() == ESP_FAIL);
     fail_send = false; fail_alloc = true; CHECK(ws_service_authenticate() == ESP_ERR_NO_MEM);

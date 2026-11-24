@@ -105,7 +105,7 @@ proto_event_t proto_parse_speech_event(const char *json_str);
 /**
  * @brief Build `auth` JSON frame (first message after WebSocket open).
  *
- *   Format: {"type":"auth","token":"<token>"}
+ *   Format: {"type":"auth","api_key":"<websocket.token>"}
  *
  * @param buf       output buffer
  * @param buf_size  buffer size

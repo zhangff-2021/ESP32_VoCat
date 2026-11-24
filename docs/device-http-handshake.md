@@ -22,7 +22,7 @@
 [设备 MQTT 接入](device-mqtt.md)。当前仍不下载固件。**
 当握手配置启用时，语音服务必须等有效的 HTTP 结果，不能因 HTTP 错误、缺少配置或 token
 失效而回退到旧 ACOS key。仅配置明确 `enabled:false` 时使用旧 NVS 语音配置。
-鉴权仍发送 `{"type":"auth","token":"..."}`，成功事件仍为 `__proxy_connected__`；
+鉴权仍发送 `{"type":"auth","api_key":"..."}`，成功事件仍为 `__proxy_connected__`；
 平台文档没有展开 WS 报文，保留现有格式作为本轮联调假设，不擅自改成 Bearer 请求头。
 
 仓库默认配置**关闭**，不请求示例域名；本机私有配置已填写用户提供的平台注册设备 ID 和 PSK。

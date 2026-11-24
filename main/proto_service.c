@@ -162,7 +162,7 @@ size_t proto_build_auth_frame(char *buf, size_t buf_size, const char *token)
     if (!buf || !buf_size) return 0;
     buf[0] = 0;
     if (!token || !*token || strlen(token) > PROTO_AUTH_TOKEN_MAX) return 0;
-    static const char prefix[] = "{\"type\":\"auth\",\"token\":\"";
+    static const char prefix[] = "{\"type\":\"auth\",\"api_key\":\"";
     size_t length = sizeof(prefix) - 1;
     /* 先测完整长度再写入；转义引号、反斜线和控制字节，失败时不返回半条凭据。 */
     for (const unsigned char *p = (const unsigned char *)token; *p; ++p)

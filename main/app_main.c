@@ -239,6 +239,9 @@ static void prepare_standby_websocket(void)
         d3_retry_pending = false;
         retry_at_ms = 0;
     }
+    /* 只有 transport 完全停止后才能换凭据/建新连接。上一次失败刚刚释放时，
+     * WS 组件可能还要再走一轮 DISCONNECTED 回调；这里交给 5s 退避处理。 */
+    if (ws_service_get_state() != WS_STATE_DISCONNECTED) return;
     const device_handshake_response_t *configuration = NULL;
     if (device_handshake_service_prepare_websocket(&configuration) != DEVICE_WS_READY) return;
     if (!configuration) return;
@@ -264,8 +267,12 @@ static void prepare_standby_websocket(void)
         snprintf(d3_preconnect_url, sizeof(d3_preconnect_url), "%s", configuration->websocket.url);
         snprintf(d3_preconnect_token, sizeof(d3_preconnect_token), "%s", configuration->websocket.token);
         ESP_LOGI(TAG, "D3 standby WebSocket started; sending preconnect auth");
+        retry_at_ms = 0;
+        d3_retry_pending = false;
     } else {
         ESP_LOGW(TAG, "D3 standby WebSocket preparation failed: %s", esp_err_to_name(err));
+        retry_at_ms = now_ms() + 5000;
+        d3_retry_pending = true;
     }
 }
 

@@ -7,7 +7,7 @@
 设备连接 HTTP 握手返回的 `websocket.url`，发送文本消息：
 
 ```json
-{"type":"auth","token":"<HTTP握手返回的websocket.token>"}
+{"type":"auth","api_key":"<HTTP握手返回的websocket.token>"}
 ```
 
 平台鉴权通过、语音服务就绪后返回：

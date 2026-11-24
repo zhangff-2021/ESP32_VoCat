@@ -192,7 +192,7 @@ static void log_server_error(const proto_msg_t *msg)
     if (len >= sizeof(message)) len = sizeof(message) - 1;
     if (len) memcpy(message, msg->error_msg, len);
     /* 提醒错误可能回显含 token 的 auth；只保留错误码。 */
-    bool sensitive = credentials_from_handshake || reminder_task_count || strstr(message, "sk-") || strstr(message, "token") ||
+    bool sensitive = reminder_task_count || strstr(message, "sk-") ||
                      strstr(message, "password") || strstr(message, "Bearer");
     const cfg_key_t keys[] = { CFG_KEY_ACOS_TOKEN, CFG_KEY_WIFI_PASSWORD };
     for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
