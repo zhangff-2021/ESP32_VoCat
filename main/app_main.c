@@ -420,22 +420,19 @@ static void start_conversation(const char *reason)
         return;
     }
     (void)wifi_service_set_audio_active(true);
-    if (ws_service_get_state() == WS_STATE_CONNECTED || ws_service_get_state() == WS_STATE_PRECONNECTED) {
-        d3_preconnect_ready = false;
-        d3_preconnect_deadline_ms = 0;
-        d3_retry_pending = false;
-        d3_preconnect_url[0] = 0;
-        d3_preconnect_token[0] = 0;
+    d3_preconnect_ready = false;
+    d3_preconnect_deadline_ms = 0;
+    d3_retry_pending = false;
+    d3_preconnect_url[0] = 0;
+    d3_preconnect_token[0] = 0;
+    app_state_set(APP_STATE_WS_CONNECTING_WAKE);
+    retry_at_ms = now_ms();
+    led_set_connecting();
+    if (ws_service_get_state() == WS_STATE_PRECONNECTED) {
+        ESP_LOGI(TAG, "Conversation requested: %s; activating D3 preconnect", reason);
+    } else if (ws_service_get_state() == WS_STATE_CONNECTED) {
         start_audio_session(reason);
     } else {
-        d3_preconnect_ready = false;
-        d3_preconnect_deadline_ms = 0;
-        d3_retry_pending = false;
-        d3_preconnect_url[0] = 0;
-        d3_preconnect_token[0] = 0;
-        app_state_set(APP_STATE_WS_CONNECTING_WAKE);
-        retry_at_ms = now_ms();
-        led_set_connecting();
         ESP_LOGI(TAG, "Conversation requested: %s; opening WebSocket", reason);
     }
 }
