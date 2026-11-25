@@ -54,6 +54,10 @@ void device_handshake_exchange(const device_handshake_http_t *http,
     };
     int64_t declared_size = -1;
     const int64_t begin_start = http->now_ms(http->context);
+    output->init_ms = 0;
+    output->open_ms = 0;
+    output->write_ms = 0;
+    output->headers_ms = 0;
     const bool begin_ok = http->begin(http->context, url, headers,
                                       sizeof(headers) / sizeof(headers[0]), body,
                                       &output->status, &declared_size);

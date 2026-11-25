@@ -150,6 +150,7 @@ static int64_t d3_preconnect_deadline_ms;
 static char d3_preconnect_url[PROTO_WS_URL_MAX + 1];
 static char d3_preconnect_token[PROTO_AUTH_TOKEN_MAX + 1];
 static bool d3_retry_pending;
+static bool mqtt_network_active;
 
 #define D3_PRECONNECT_DEFAULT_REFRESH_SEC 600u
 #define D3_PRECONNECT_REFRESH_FLOOR_SEC 60u
@@ -266,7 +267,11 @@ static void prepare_standby_websocket(void)
     }
     esp_err_t err = ws_service_set_credentials(configuration->websocket.url,
                                                configuration->websocket.token);
-    if (err == ESP_OK) err = ws_service_connect();
+    if (err == ESP_OK) {
+        wifi_service_set_net_active(true);
+        err = ws_service_connect();
+        if (err != ESP_OK) wifi_service_set_net_active(false);
+    }
     if (err == ESP_OK) {
         snprintf(d3_preconnect_url, sizeof(d3_preconnect_url), "%s", configuration->websocket.url);
         snprintf(d3_preconnect_token, sizeof(d3_preconnect_token), "%s", configuration->websocket.token);
@@ -363,7 +368,11 @@ static void retry_voice_connection(int64_t now)
             task_ids[i] = reminder_task->task_ids[i];
         err = ws_service_prepare_reminder(reminder_task->device_id, task_ids, reminder_task->count);
     }
-    if (err == ESP_OK) err = ws_service_connect();
+    if (err == ESP_OK) {
+        wifi_service_set_net_active(true);
+        err = ws_service_connect();
+        if (err != ESP_OK) wifi_service_set_net_active(false);
+    }
     if (err == ESP_OK) {
         retry_at_ms = 0;
         awaiting_voice_auth = false;
@@ -690,7 +699,6 @@ static void main_task(void *arg)
                 if (device_handshake_service_prepare_websocket(&cached_configuration) == DEVICE_WS_READY) {
                     ESP_LOGI(TAG, "Wi-Fi ready; reusing cached credentials for D3 preconnect");
                     prepare_standby_websocket();
-                    device_handshake_service_renew_credentials();
                 } else {
                     device_handshake_service_renew_credentials();
                 }
@@ -757,6 +765,7 @@ static void main_task(void *arg)
                 break;
             case EV_WS_CONNECTED:
                 ESP_LOGI(TAG, "WebSocket transport connected; authenticating");
+                wifi_service_set_net_active(false);
                 awaiting_voice_auth = true;
                 auth_deadline_ms = now_ms() + 10000;
                 if (session_requested) {
@@ -774,6 +783,11 @@ static void main_task(void *arg)
                 d3_preconnect_deadline_ms = now_ms() + d3_preconnect_refresh_delay_ms();
                 auth_deadline_ms = retry_at_ms = 0;
                 awaiting_voice_auth = false;
+                if (!mqtt_network_active) {
+                    mqtt_network_active = true;
+                    device_mqtt_service_set_network_active(true);
+                    ESP_LOGI(TAG, "D3 standby ready; starting deferred MQTT connection");
+                }
                 ESP_LOGI(TAG, "D3 WebSocket preconnected; expires_in=%us refresh_in=%llds",
                          (unsigned)ws_service_get_preconnect_expires_in(),
                          (long long)((d3_preconnect_deadline_ms - now_ms()) / 1000));
@@ -787,6 +801,11 @@ static void main_task(void *arg)
                 d3_retry_pending = false;
                 d3_preconnect_url[0] = 0;
                 d3_preconnect_token[0] = 0;
+                if (!mqtt_network_active) {
+                    mqtt_network_active = true;
+                    device_mqtt_service_set_network_active(true);
+                    ESP_LOGI(TAG, "Voice session active; starting deferred MQTT connection");
+                }
                 start_audio_session(reminder_task ? "MQTT wake" : "wake/reconnect");
                 break;
             case EV_WS_DISCONNECTED:
@@ -795,6 +814,8 @@ static void main_task(void *arg)
                 d3_retry_pending = false;
                 d3_preconnect_url[0] = 0;
                 d3_preconnect_token[0] = 0;
+                mqtt_network_active = false;
+                device_mqtt_service_set_network_active(false);
                 schedule_standby_preconnect_retry("transport disconnected");
                 recover_session("WebSocket transport disconnected");
                 break;
@@ -811,6 +832,9 @@ static void main_task(void *arg)
                 d3_retry_pending = false;
                 d3_preconnect_url[0] = 0;
                 d3_preconnect_token[0] = 0;
+                mqtt_network_active = false;
+                device_mqtt_service_set_network_active(false);
+                device_handshake_service_clear_cached_credentials();
                 schedule_standby_preconnect_retry("authentication rejected");
                 handle_voice_auth_failure("gateway authentication rejected");
                 break;

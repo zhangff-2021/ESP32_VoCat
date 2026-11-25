@@ -39,6 +39,7 @@ static atomic_bool s_connect_enabled;
 static esp_timer_handle_t s_connect_timer = NULL;
 static int64_t s_connect_deadline_us; /* 与 start/stop/事件处理共用递归互斥锁。 */
 static bool s_audio_active;          /* 同一把锁保护；断线期间保留音频性能意图。 */
+static unsigned s_net_active_refs;   /* 同一把锁保护；建链窗口与音频意图取或。 */
 #define WIFI_CONNECT_TIMEOUT_MS 60000
 static wifi_state_t get_state(void);
 static void set_state(wifi_state_t st);
@@ -93,10 +94,11 @@ static wifi_state_t get_state(void)
  * 不把性能优化变成新的掉线/重连条件。 */
 static esp_err_t apply_audio_power_save_locked(void)
 {
-    wifi_ps_type_t mode = s_audio_active ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM;
+    wifi_ps_type_t mode = (s_audio_active || s_net_active_refs) ?
+                          WIFI_PS_NONE : WIFI_PS_MIN_MODEM;
     esp_err_t err = esp_wifi_set_ps(mode);
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Wi-Fi power save: %s", s_audio_active ?
+        ESP_LOGI(TAG, "Wi-Fi power save: %s", (s_audio_active || s_net_active_refs) ?
                  "NONE (continuous audio)" : "MIN_MODEM (idle)");
     } else {
         ESP_LOGW(TAG, "Wi-Fi power save update failed: %s", esp_err_to_name(err));
@@ -109,6 +111,25 @@ esp_err_t wifi_service_set_audio_active(bool active)
     if (!s_mutex) return ESP_ERR_INVALID_STATE;
     lock();
     s_audio_active = active;
+    esp_err_t err = ESP_OK;
+    if (s_wifi_state == WIFI_STATE_CONNECTED || s_wifi_state == WIFI_STATE_GOT_IP) {
+        err = apply_audio_power_save_locked();
+    }
+    unlock();
+    return err;
+}
+
+esp_err_t wifi_service_set_net_active(bool active)
+{
+    if (!s_mutex) return ESP_ERR_INVALID_STATE;
+    lock();
+    unsigned previous = s_net_active_refs;
+    if (active) {
+        if (s_net_active_refs < UINT_MAX) ++s_net_active_refs;
+    } else if (s_net_active_refs) {
+        --s_net_active_refs;
+    }
+    if ((previous > 0) == (s_net_active_refs > 0)) { unlock(); return ESP_OK; }
     esp_err_t err = ESP_OK;
     if (s_wifi_state == WIFI_STATE_CONNECTED || s_wifi_state == WIFI_STATE_GOT_IP) {
         err = apply_audio_power_save_locked();

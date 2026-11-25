@@ -19,6 +19,10 @@ esp_err_t device_handshake_service_refresh(void);
  * 新建语音连接必须先调用 prepare_websocket 检查 TTL，并由 WS 服务复制凭据。 */
 const device_handshake_response_t *device_handshake_service_get_configuration(void);
 
+/* 冷启动快速路径：用上次成功握手缓存的 WS/MQTT 配置先建连，不等待 HTTPS。
+ * 缓存仍按服务端 expires_in 校验；永久错误或鉴权拒绝后必须调用 clear。 */
+void device_handshake_service_clear_cached_credentials(void);
+
 typedef enum {
     DEVICE_WS_DISABLED, /* 仅显式 enabled:false 允许沿用旧语音配置。 */
     DEVICE_WS_WAITING,

@@ -45,6 +45,7 @@ static QueueHandle_t s_control, s_rx, s_ready, s_results;
 static atomic_bool s_callback_overflow;
 static atomic_uint s_wake_serial;
 static atomic_bool s_dispatch_allowed;
+static atomic_bool s_network_active;
 static bool s_started;
 static device_mqtt_delivery_t *s_main_delivery; /* 仅主任务使用；最多一个借出对象。 */
 
@@ -54,6 +55,7 @@ typedef struct { device_mqtt_delivery_t *tasks; bool handled; } mqtt_result_t;
 typedef struct {
     mqtt_settings_t settings;
     esp_mqtt_client_handle_t client;
+    bool net_active;
     device_mqtt_retry_t retry;
     device_mqtt_assembly_t assembly;
     bool connected, subscribed, subscription_rejected, pending_dirty, storage_ready, dispatch_paused;
@@ -114,6 +116,10 @@ static void mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 
 static void stop_client(mqtt_worker_t *w)
 {
+    if (w->net_active) {
+        wifi_service_set_net_active(false);
+        w->net_active = false;
+    }
     if (w->client) {
         multi_heap_info_t info;
         heap_caps_get_info(&info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -366,6 +372,10 @@ static void consume_notice(mqtt_worker_t *w, const mqtt_notice_t *event)
         w->connected = true;
         w->connect_deadline = 0;
         w->retry.auth_failures = 0;
+        if (w->net_active) {
+            wifi_service_set_net_active(false);
+            w->net_active = false;
+        }
         ESP_LOGI(TAG, "MQTT connected: client_id=%s username=%s (3.1.1, TLS)",
                  w->settings.config.client_id, w->settings.config.username);
         w->subscribe_id = esp_mqtt_client_subscribe(w->client, w->settings.config.subscribe_topic, 1);
@@ -442,9 +452,13 @@ static void start_client(mqtt_worker_t *w)
         .outbox.limit = 16384,
     };
     w->client = esp_mqtt_client_init(&config);
+    wifi_service_set_net_active(true);
+    w->net_active = true;
     if (!w->client ||
         esp_mqtt_client_register_event(w->client, ESP_EVENT_ANY_ID, mqtt_event, w) != ESP_OK ||
         esp_mqtt_client_start(w->client) != ESP_OK) {
+        if (w->client) esp_mqtt_client_destroy(w->client);
+        w->client = NULL;
         connection_failed(w, 0);
         return;
     }
@@ -509,7 +523,7 @@ static void mqtt_worker_step(mqtt_worker_t *w, mqtt_settings_t *next)
     if ((w->connect_deadline && now_ms() >= w->connect_deadline) ||
         (w->subscription_deadline && now_ms() >= w->subscription_deadline))
         connection_failed(w, 0);
-    if (w->settings.enabled && w->settings.configured && !w->client &&
+    if (atomic_load(&s_network_active) && w->settings.enabled && w->settings.configured && !w->client &&
         !w->retry.blocked && now_ms() >= w->retry.retry_at_ms) start_client(w);
     persist_state(w);
     publish_status(w);
@@ -605,6 +619,7 @@ void device_mqtt_service_poll(bool enabled, unsigned epoch, const device_handsha
 
 void device_mqtt_service_on_wake(void) { atomic_fetch_add(&s_wake_serial, 1); }
 void device_mqtt_service_set_dispatch_allowed(bool allowed) { atomic_store(&s_dispatch_allowed, allowed); }
+void device_mqtt_service_set_network_active(bool active) { atomic_store(&s_network_active, active); }
 bool device_mqtt_service_voice_enabled(void) { return s_started && DEVICE_MQTT_FORWARD_TASK_TO_WS; }
 
 device_mqtt_delivery_t *device_mqtt_service_take_tasks(void)

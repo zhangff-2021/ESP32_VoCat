@@ -25,6 +25,10 @@ typedef struct {
     bool success;
     const char *reason; /* 固定字符串，可安全输出日志。 */
     int64_t connect_ms; /* begin 内 DNS/TCP/TLS/请求发送/收头的合计耗时。 */
+    int64_t init_ms;    /* esp_http_client_init + 设置请求头耗时。 */
+    int64_t open_ms;    /* esp_http_client_open 耗时；冷启动主要是 DNS/TCP/TLS。 */
+    int64_t write_ms;   /* 请求体写入耗时。 */
+    int64_t headers_ms; /* esp_http_client_fetch_headers 耗时。 */
     int64_t read_ms;    /* body 读取与解析耗时。 */
     device_handshake_response_t response;
 } device_handshake_result_t;

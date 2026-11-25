@@ -80,6 +80,14 @@ esp_err_t wifi_service_disconnect(void);
 esp_err_t wifi_service_set_audio_active(bool active);
 
 /**
+ * @brief 建链窗口临时关闭 modem sleep（TLS/DNS/WS/MQTT）。
+ *
+ * 与音频 active 独立保存意图：任一路径要求高性能时都保持 WIFI_PS_NONE。
+ * true/false 按引用计数配对；最后一次 false 才恢复默认省电模式。
+ */
+esp_err_t wifi_service_set_net_active(bool active);
+
+/**
  * @brief 获取当前 Wi-Fi 状态
  */
 wifi_state_t wifi_service_get_state(void);

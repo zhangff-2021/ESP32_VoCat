@@ -11,6 +11,8 @@ void device_mqtt_service_poll(bool enabled, unsigned configuration_epoch,
                               const device_handshake_response_t *configuration);
 /* 主任务允许通知交接：待机准备连接，或已有鉴权会话；连接中/配网时暂停。 */
 void device_mqtt_service_set_dispatch_allowed(bool allowed);
+/* 主任务允许 worker 真正启动 MQTT TLS：D3 预连接 ready 后才放行，避免与 WSS TLS/唤醒 AFE 抢资源。 */
+void device_mqtt_service_set_network_active(bool active);
 /* 仅真实用户唤醒解除 CONNACK 4/5 五次失败的熔断；任务/定时轮询不解除。 */
 void device_mqtt_service_on_wake(void);
 typedef struct {
