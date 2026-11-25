@@ -91,6 +91,10 @@ void ws_service_get_speech_status(ws_speech_status_t *status);
 esp_err_t ws_service_prepare_reminder(const char *device_id,
                                       const char *const *task_ids, size_t task_count);
 
+/** 转接：首条 auth 携带 join_ticket 加入既有房间，不携带提醒 task_ids。
+ * 票据一次性：prepare 只在断连/预连接态接受；发送时立即消费，失败也不重放。 */
+esp_err_t ws_service_prepare_transfer(const char *device_id, const char *join_ticket);
+
 /** Generic JSON text send (for future protocol extensions). */
 esp_err_t ws_service_send_json(const char *json_str);
 

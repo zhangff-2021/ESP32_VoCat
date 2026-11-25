@@ -192,6 +192,21 @@ static void builder_checks(void)
         "jwt-token", "dev-123", (const char *const[]){"42", "x"}, 2));
     CHECK(!proto_build_reminder_auth_frame(reminder_buffer, sizeof(reminder_buffer),
         "jwt-token", "dev-123", task_ids, 0));
+    char transfer_buffer[PROTO_TRANSFER_AUTH_FRAME_SIZE];
+    size_t transfer_length = proto_build_transfer_auth_frame(transfer_buffer,
+        sizeof(transfer_buffer), "jwt-token", "dev-123", "v2.payload.sig");
+    CHECK(transfer_length == strlen(transfer_buffer) && transfer_length > 0);
+    cJSON *transfer = cJSON_Parse(transfer_buffer); CHECK(transfer != NULL);
+    CHECK(!strcmp(cJSON_GetObjectItemCaseSensitive(transfer, "type")->valuestring, "auth"));
+    CHECK(!strcmp(cJSON_GetObjectItemCaseSensitive(transfer, "api_key")->valuestring, "jwt-token"));
+    CHECK(!strcmp(cJSON_GetObjectItemCaseSensitive(transfer, "device_id")->valuestring, "dev-123"));
+    CHECK(!strcmp(cJSON_GetObjectItemCaseSensitive(transfer, "join_ticket")->valuestring, "v2.payload.sig"));
+    CHECK(!cJSON_GetObjectItemCaseSensitive(transfer, "task_ids"));
+    cJSON_Delete(transfer);
+    CHECK(!proto_build_transfer_auth_frame(transfer_buffer, sizeof(transfer_buffer),
+        "jwt-token", "dev-123", "v1.payload.sig"));
+    CHECK(!proto_build_transfer_auth_frame(transfer_buffer, sizeof(transfer_buffer),
+        "jwt-token", "dev-123", ""));
     CHECK(proto_parse_json("{\"type\":\"error\",\"code\":2000}", &msg) == PROTO_OK);
     CHECK(proto_is_auth_error(&msg));
     CHECK(proto_parse_json("{\"type\":\"error\",\"error\":{\"code\":\"token_expired\"}}", &msg) == PROTO_OK);

@@ -84,6 +84,9 @@ typedef struct {
 #define PROTO_REMINDER_TASK_IDS_MAX 8u
 #define PROTO_REMINDER_AUTH_FRAME_SIZE \
     (PROTO_AUTH_TOKEN_MAX * 6 + 64 * 6 + PROTO_REMINDER_TASK_IDS_MAX * (128 * 6 + 4) + 192)
+#define PROTO_TRANSFER_TICKET_MAX 1024u
+#define PROTO_TRANSFER_AUTH_FRAME_SIZE \
+    (PROTO_AUTH_TOKEN_MAX * 6 + PROTO_TRANSFER_TICKET_MAX * 6 + 256)
 typedef struct {
     char url[PROTO_WS_URL_MAX + 1];
     char token[PROTO_AUTH_TOKEN_MAX + 1];
@@ -119,6 +122,9 @@ size_t proto_build_preconnect_auth_frame(char *buf, size_t buf_size, const char 
 size_t proto_build_reminder_auth_frame(char *buf, size_t buf_size, const char *token,
                                        const char *device_id,
                                        const char *const *task_ids, size_t task_count);
+/* 转接场景：带房间加入票据，加入既有房间；不携带提醒 task_ids。 */
+size_t proto_build_transfer_auth_frame(char *buf, size_t buf_size, const char *token,
+                                       const char *device_id, const char *join_ticket);
 
 /**
  * @brief Build `input_audio_buffer.append` JSON frame.

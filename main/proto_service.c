@@ -248,6 +248,34 @@ size_t proto_build_reminder_auth_frame(char *buf, size_t buf_size, const char *t
     return length;
 }
 
+size_t proto_build_transfer_auth_frame(char *buf, size_t buf_size, const char *token,
+                                       const char *device_id, const char *join_ticket)
+{
+    if (!buf || !buf_size) return 0;
+    buf[0] = 0;
+    if (!token || !*token || strlen(token) > PROTO_AUTH_TOKEN_MAX ||
+        !device_id || !*device_id || strlen(device_id) > 64 ||
+        !join_ticket || strncmp(join_ticket, "v2.", 3) != 0 ||
+        strlen(join_ticket) > PROTO_TRANSFER_TICKET_MAX) return 0;
+    cJSON *root = cJSON_CreateObject();
+    bool ok = root &&
+        cJSON_AddStringToObject(root, "type", "auth") &&
+        cJSON_AddStringToObject(root, "api_key", token) &&
+        cJSON_AddStringToObject(root, "device_id", device_id) &&
+        cJSON_AddStringToObject(root, "join_ticket", join_ticket);
+    char *json = ok ? cJSON_PrintUnformatted(root) : NULL;
+    size_t length = json ? strlen(json) : 0;
+    if (!length || length >= buf_size) {
+        if (buf_size) buf[0] = 0;
+        length = 0;
+    } else {
+        memcpy(buf, json, length + 1);
+    }
+    cJSON_free(json);
+    cJSON_Delete(root);
+    return length;
+}
+
 size_t proto_build_input_audio_append(char *buf, size_t buf_size,
                                        const char *base64_audio,
                                        const char *event_id)

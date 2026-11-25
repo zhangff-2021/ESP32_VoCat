@@ -252,6 +252,13 @@ bool device_handshake_parse_response(const char *json, size_t len, const char *d
     if (strcmp(output->mqtt.publish_topic, expected_topic) != 0) goto done;
     snprintf(expected_topic, sizeof(expected_topic), "devices/%s/task", device_id);
     if (strcmp(output->mqtt.subscribe_topic, expected_topic) != 0) goto done;
+    /* 工单 05：transfer_subscribe_topic 是可选字段。老平台不下发时保持为空，
+     * 设备照常工作；新平台下发时只接受本设备的 transfer 主题。 */
+    if (cJSON_HasObjectItem(mqtt, "transfer_subscribe_topic")) {
+        if (!COPY_FIELD(mqtt, "transfer_subscribe_topic", mqtt.transfer_subscribe_topic)) goto done;
+        snprintf(expected_topic, sizeof(expected_topic), "devices/%s/transfer", device_id);
+        if (strcmp(output->mqtt.transfer_subscribe_topic, expected_topic) != 0) goto done;
+    }
     *reason = "invalid_firmware_fields";
     if (!cJSON_IsNull(firmware)) {
         if (!cJSON_IsObject(firmware) || !COPY_FIELD(firmware, "version", firmware.version) ||

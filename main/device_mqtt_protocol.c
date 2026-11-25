@@ -11,6 +11,80 @@ static bool task_id_valid(const char *id)
     return true;
 }
 
+static bool transfer_flat_json(const char *json, size_t length)
+{
+    if (!json || !length || length > DEVICE_TASK_PAYLOAD_MAX) return false;
+    bool quoted = false;
+    int depth = 0;
+    for (size_t i = 0; i < length; ++i) {
+        if (!json[i]) return false;
+        if (quoted && json[i] == '\\') {
+            if (++i == length) return false;
+            if (json[i] == 'u' && length - i >= 5 && !memcmp(json + i + 1, "0000", 4)) return false;
+        } else if (json[i] == '"') quoted = !quoted;
+        else if (!quoted) {
+            if (json[i] == '[' || json[i] == ']') return false;
+            if (json[i] == '{' && ++depth > 1) return false;
+            if (json[i] == '}' && --depth < 0) return false;
+        }
+    }
+    return !quoted && depth == 0;
+}
+
+static bool transfer_ticket_valid(const char *ticket)
+{
+    if (!ticket || strncmp(ticket, "v2.", 3) != 0) return false;
+    const char *first = ticket + 3;
+    const char *second = strchr(first, '.');
+    if (!second || second == first) return false;
+    const char *third = strchr(second + 1, '.');
+    if (!third || third == second + 1) return false;
+    return strlen(ticket) <= DEVICE_TRANSFER_TICKET_MAX;
+}
+
+bool device_mqtt_parse_transfer(const char *json, size_t length, device_mqtt_transfer_t *transfer)
+{
+    if (!transfer || !transfer_flat_json(json, length)) return false;
+    memset(transfer, 0, sizeof(*transfer));
+    const char *end = NULL;
+    cJSON *root = cJSON_ParseWithLengthOpts(json, length, &end, false);
+    if (!root) return false;
+    while (end < json + length && strchr(" \t\r\n", *end)) ++end;
+    bool ok = end == json + length && cJSON_IsObject(root);
+    for (const cJSON *field = root->child; ok && field; field = field->next) {
+        for (const cJSON *other = field->next; other; other = other->next)
+            if (!strcmp(field->string, other->string)) { ok = false; break; }
+    }
+    const cJSON *kind = cJSON_GetObjectItemCaseSensitive(root, "kind");
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "transfer_id");
+    const cJSON *room = cJSON_GetObjectItemCaseSensitive(root, "room_name");
+    const cJSON *ticket = cJSON_GetObjectItemCaseSensitive(root, "ticket");
+    const cJSON *expires = cJSON_GetObjectItemCaseSensitive(root, "expires_at");
+    const cJSON *timeout = cJSON_GetObjectItemCaseSensitive(root, "timeout_sec");
+    ok = ok && cJSON_IsString(kind) && !strcmp(kind->valuestring, "transfer") &&
+         cJSON_IsString(id) && id->valuestring[0] &&
+         strlen(id->valuestring) <= DEVICE_TRANSFER_ID_MAX &&
+         cJSON_IsString(room) && room->valuestring[0] &&
+         strlen(room->valuestring) <= DEVICE_TRANSFER_ROOM_MAX &&
+         cJSON_IsString(ticket) && transfer_ticket_valid(ticket->valuestring) &&
+         cJSON_IsString(expires) &&
+         device_handshake_parse_time(expires->valuestring, &transfer->expires_at_ms);
+    if (ok && timeout) {
+        ok = cJSON_IsNumber(timeout) && timeout->valuedouble >= 1 &&
+             timeout->valuedouble <= UINT32_MAX &&
+             timeout->valuedouble == (double)(uint32_t)timeout->valuedouble;
+        if (ok) transfer->timeout_sec = (uint32_t)timeout->valuedouble;
+    } else if (ok) transfer->timeout_sec = 30;
+    if (ok) {
+        strcpy(transfer->transfer_id, id->valuestring);
+        strcpy(transfer->room_name, room->valuestring);
+        strcpy(transfer->ticket, ticket->valuestring);
+    }
+    cJSON_Delete(root);
+    if (!ok) memset(transfer, 0, sizeof(*transfer));
+    return ok;
+}
+
 bool device_mqtt_parse_task(const char *json, size_t length, device_mqtt_task_t *task)
 {
     if (!json || !task || !length || length > DEVICE_TASK_PAYLOAD_MAX) return false;

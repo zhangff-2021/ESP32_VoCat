@@ -21,8 +21,10 @@ typedef struct {
 } device_handshake_config_t;
 
 typedef struct {
-        char endpoint[513], client_id[257], username[65], password[513];
-        char publish_topic[129], subscribe_topic[129];
+    char endpoint[513], client_id[257], username[65], password[513];
+    char publish_topic[129], subscribe_topic[129];
+    /* 可选：老平台不下发时为空数组，设备只订提醒主题、照常工作。 */
+    char transfer_subscribe_topic[129];
 } device_mqtt_configuration_t;
 
 typedef struct {

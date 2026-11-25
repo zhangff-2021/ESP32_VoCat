@@ -16,7 +16,8 @@ endif()
 
 include("$ENV{IDF_PATH}/tools/cmake/project.cmake")
 set(COMPONENTS main)
-set(PROJECT_VER "1.0.0-vocat")
+# 工单 05：带 transfer 标记的版本用于平台侧固件门槛；老版本无法接转接通知。
+set(PROJECT_VER "1.1.0-vocat-transfer")
 
 project(vocat_korvo_agent)
 

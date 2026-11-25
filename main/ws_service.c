@@ -16,6 +16,7 @@
 #include "esp_timer.h"
 #include "sdkconfig.h"
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
 
@@ -48,6 +49,9 @@ static uint32_t speech_sequence;
 static char reminder_device_id[65];
 static char reminder_task_ids[PROTO_REMINDER_TASK_IDS_MAX][129];
 static size_t reminder_task_count;
+static char transfer_device_id[65];
+static char transfer_join_ticket[PROTO_TRANSFER_TICKET_MAX + 1];
+static bool transfer_prepared;
 typedef struct {
     uint8_t *data;
     size_t len;
@@ -531,14 +535,26 @@ esp_err_t ws_service_authenticate(void)
     const char *token = credentials->token;
     log_auth_token_fingerprint(token, credentials_from_handshake ?
                               "HTTP/handshake/websocket.token" : "NVS/korvo_cfg/acos_token");
-    size_t capacity = reminder_task_count ? PROTO_REMINDER_AUTH_FRAME_SIZE : strlen(token) * 6 + 32;
+    size_t capacity = transfer_prepared ? PROTO_TRANSFER_AUTH_FRAME_SIZE :
+                      reminder_task_count ? PROTO_REMINDER_AUTH_FRAME_SIZE : strlen(token) * 6 + 32;
     char *auth = heap_caps_malloc(capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!auth) return ESP_ERR_NO_MEM;
     const char *ids[PROTO_REMINDER_TASK_IDS_MAX];
     for (size_t i = 0; i < reminder_task_count; ++i) ids[i] = reminder_task_ids[i];
-    size_t len = reminder_task_count ?
-        proto_build_reminder_auth_frame(auth, capacity, token, reminder_device_id, ids, reminder_task_count) :
-        proto_build_auth_frame(auth, capacity, token);
+    size_t len = 0;
+    if (transfer_prepared) {
+        char ticket[PROTO_TRANSFER_TICKET_MAX + 1];
+        snprintf(ticket, sizeof(ticket), "%s", transfer_join_ticket);
+        /* 一次性：auth 帧构造后立即焚毁，发送失败也不重放同一张票。 */
+        memset(transfer_join_ticket, 0, sizeof(transfer_join_ticket));
+        transfer_prepared = false;
+        len = proto_build_transfer_auth_frame(auth, capacity, token, transfer_device_id, ticket);
+        memset(ticket, 0, sizeof(ticket));
+    } else if (reminder_task_count) {
+        len = proto_build_reminder_auth_frame(auth, capacity, token, reminder_device_id, ids, reminder_task_count);
+    } else {
+        len = proto_build_auth_frame(auth, capacity, token);
+    }
     esp_err_t err = len && esp_websocket_client_send_text(client, auth, len, pdMS_TO_TICKS(1000)) == (int)len
                     ? ESP_OK : ESP_FAIL;
     if (err == ESP_OK && reminder_task_count)
@@ -610,6 +626,9 @@ esp_err_t ws_service_disconnect(void)
     reminder_device_id[0] = 0;
     memset(reminder_task_ids, 0, sizeof(reminder_task_ids));
     reminder_task_count = 0;
+    transfer_device_id[0] = 0;
+    memset(transfer_join_ticket, 0, sizeof(transfer_join_ticket));
+    transfer_prepared = false;
     played_frames = 0;
     audio_out_stop();
     xSemaphoreGive(playback_lock);
@@ -681,6 +700,7 @@ esp_err_t ws_service_prepare_reminder(const char *device_id,
     if (!device_id || !device_id[0] || strlen(device_id) >= sizeof(reminder_device_id) ||
         !task_ids || !task_count || task_count > PROTO_REMINDER_TASK_IDS_MAX)
         return ESP_ERR_INVALID_ARG;
+    if (transfer_prepared) return ESP_ERR_INVALID_STATE;
     for (size_t i = 0; i < task_count; ++i) {
         if (!task_ids[i] || !task_ids[i][0] || strlen(task_ids[i]) > 128) return ESP_ERR_INVALID_ARG;
         for (const unsigned char *p = (const unsigned char *)task_ids[i]; *p; ++p)
@@ -697,5 +717,26 @@ esp_err_t ws_service_prepare_reminder(const char *device_id,
     reminder_task_count = task_count;
     xSemaphoreGive(playback_lock);
     ESP_LOGI(TAG, "Reminder WebSocket auth prepared: task_count=%u", (unsigned)task_count);
+    return ESP_OK;
+}
+
+esp_err_t ws_service_prepare_transfer(const char *device_id, const char *join_ticket)
+{
+    if (!device_id || !device_id[0] || strlen(device_id) >= sizeof(transfer_device_id) ||
+        !join_ticket || strncmp(join_ticket, "v2.", 3) != 0 ||
+        !join_ticket[3] || strlen(join_ticket) > PROTO_TRANSFER_TICKET_MAX)
+        return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(playback_lock, portMAX_DELAY);
+    if ((state != WS_STATE_DISCONNECTED && state != WS_STATE_PRECONNECTED) ||
+        (state == WS_STATE_DISCONNECTED && client_started) ||
+        reminder_task_count || transfer_prepared) {
+        xSemaphoreGive(playback_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    snprintf(transfer_device_id, sizeof(transfer_device_id), "%s", device_id);
+    snprintf(transfer_join_ticket, sizeof(transfer_join_ticket), "%s", join_ticket);
+    transfer_prepared = true;
+    xSemaphoreGive(playback_lock);
+    ESP_LOGI(TAG, "Transfer WebSocket auth prepared: ticket redacted");
     return ESP_OK;
 }

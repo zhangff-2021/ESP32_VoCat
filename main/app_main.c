@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -137,6 +138,8 @@ static bool conversation_active;
 static bool session_requested;
 /* 只持有建连时的任务通知；鉴权后交还 MQTT，不跟踪播报结果。 */
 static device_mqtt_delivery_t *reminder_task;
+/* 转接通知只保留到首条 auth 使用票据；忙时收到立即丢弃，不打断当前通话。 */
+static device_mqtt_transfer_delivery_t *transfer_task;
 static uint32_t session_started_ms;
 /* 每次主动唤醒最多因鉴权失败重新握手一次；普通网络恢复不消耗该次数。 */
 static bool voice_auth_refresh_used, awaiting_voice_auth, waiting_for_credentials;
@@ -164,6 +167,33 @@ static void release_reminder(bool handled)
     reminder_task = NULL;
 }
 
+static void release_transfer(bool handled)
+{
+    if (!transfer_task) return;
+    device_mqtt_service_release_transfer(transfer_task, handled);
+    transfer_task = NULL;
+}
+
+static bool prepare_transfer_once(void)
+{
+    if (!transfer_task) return false;
+    if (!transfer_task->ticket[0]) {
+        /* 票据已经交给 WS 层，任何失败重试都不能重放。 */
+        release_transfer(true);
+        return false;
+    }
+    esp_err_t prepared = ws_service_prepare_transfer(transfer_task->device_id,
+                                                      transfer_task->ticket);
+    /* 无论 WS 后续连接成败，这张票都已交给 WS 层且只能使用一次。 */
+    transfer_task->ticket[0] = 0;
+    if (prepared != ESP_OK) {
+        ESP_LOGW(TAG, "Transfer auth preparation failed: %s", esp_err_to_name(prepared));
+        release_transfer(true);
+        return false;
+    }
+    return true;
+}
+
 /* 停止超时不能清 FIFO 或切采样基准；关闭 transport 后允许上传任务退出。 */
 static void stop_session_audio(void)
 {
@@ -189,6 +219,7 @@ static void end_conversation(const char *reason)
     device_mqtt_service_set_dispatch_allowed(false);
     /* 尚未关联到会话的任务保留；主动触屏取消由调用者先消费通知。 */
     release_reminder(false);
+    release_transfer(false);
     session_requested = conversation_active = false;
     d3_preconnect_ready = false;
     d3_preconnect_deadline_ms = 0;
@@ -336,7 +367,9 @@ static void retry_voice_connection(int64_t now)
         d3_preconnect_token[0] = 0;
         ESP_LOGI(TAG, "Activating D3 preconnected WebSocket; credentials=%s",
                  readiness == DEVICE_WS_READY ? "device handshake" : "legacy NVS (handshake disabled)");
-        if (reminder_task) {
+        if (prepare_transfer_once()) {
+            /* join_ticket 已在首条 auth 中使用；不再携带提醒 task_ids。 */
+        } else if (reminder_task) {
             const char *task_ids[DEVICE_TASK_QUEUE_SIZE];
             for (unsigned i = 0; i < reminder_task->count; ++i)
                 task_ids[i] = reminder_task->task_ids[i];
@@ -362,7 +395,9 @@ static void retry_voice_connection(int64_t now)
     if (err == ESP_OK) err = ws_service_set_credentials(
         configuration ? configuration->websocket.url : NULL,
         configuration ? configuration->websocket.token : NULL);
-    if (err == ESP_OK && reminder_task) {
+    if (err == ESP_OK && transfer_task) {
+        if (!prepare_transfer_once()) err = ESP_OK;
+    } else if (err == ESP_OK && reminder_task) {
         const char *task_ids[DEVICE_TASK_QUEUE_SIZE];
         for (unsigned i = 0; i < reminder_task->count; ++i)
             task_ids[i] = reminder_task->task_ids[i];
@@ -401,6 +436,7 @@ static void start_audio_session(const char *reason)
     session_started_ms = (uint32_t)now_ms();
     resume_deadline_ms = 0;
     release_reminder(true); /* 仅表示通知已关联到会话，绝非播放完成 ACK。 */
+    release_transfer(true);
     led_set_listening();
     ESP_LOGI(TAG, "Full-duplex session active; source=%s; continuous microphone and playback", reason);
     ESP_LOGI(TAG, "Idle timeout: %u s; input=platform speech_started/stopped, output=PCM level",
@@ -484,6 +520,7 @@ static void handle_talk_action(const char *reason)
     if (provisioning_service_is_active()) return;
     if (session_requested) {
         release_reminder(true); /* 用户拒绝本次唤醒，不能又被同一通知自动拉起。 */
+        release_transfer(true);
         end_conversation(reason);
     } else {
         device_mqtt_service_on_wake();
@@ -505,6 +542,7 @@ static void enter_provisioning(const char *reason)
 {
     if (provisioning_service_is_active()) return;
     release_reminder(true);
+    release_transfer(true);
     end_conversation(reason);
     esp_err_t err = provisioning_service_start();
     if (err == ESP_OK) {
@@ -640,7 +678,7 @@ static bool tagged_ws_event(event_type_t id)
 /* MQTT 只触发唤醒；在线会话由平台直接插播，不重连、不重复提交 task_ids。 */
 static void poll_reminder(void)
 {
-    if (reminder_task || cleanup_pending || provisioning_service_is_active() ||
+    if (transfer_task || reminder_task || cleanup_pending || provisioning_service_is_active() ||
         wifi_service_get_state() != WIFI_STATE_GOT_IP ||
         !device_mqtt_service_voice_enabled()) return;
     if (session_requested && !conversation_active) return; /* 等当前连接认证。 */
@@ -656,6 +694,31 @@ static void poll_reminder(void)
     ESP_LOGI(TAG, "Task notification wakes full-duplex session: count=%u", reminder_task->count);
     start_conversation("MQTT notification");
     if (!session_requested) release_reminder(false);
+}
+
+static void poll_transfer(void)
+{
+    if (transfer_task || cleanup_pending || provisioning_service_is_active() ||
+        wifi_service_get_state() != WIFI_STATE_GOT_IP ||
+        !device_mqtt_service_voice_enabled()) return;
+    transfer_task = device_mqtt_service_take_transfer();
+    if (!transfer_task) return;
+    time_t now_unix = time(NULL);
+    if (now_unix > 0 && transfer_task->expires_at_ms <= (int64_t)now_unix * 1000) {
+        ESP_LOGE(TAG, "Transfer dropped: ticket expired id=%s", transfer_task->transfer_id);
+        release_transfer(true);
+        return;
+    }
+    if (session_requested) {
+        ESP_LOGW(TAG, "transfer dropped: busy (id=%s; ticket not replayed)",
+                 transfer_task->transfer_id);
+        release_transfer(true);
+        return;
+    }
+    ESP_LOGI(TAG, "Transfer notification starts session: id=%s room=%s",
+             transfer_task->transfer_id, transfer_task->room_name);
+    start_conversation("MQTT transfer");
+    if (!session_requested) release_transfer(false);
 }
 
 static void main_task(void *arg)
@@ -751,6 +814,7 @@ static void main_task(void *arg)
             case EV_BUTTON_END_TALK:
                 if (!provisioning_service_is_active()) {
                     release_reminder(true);
+                    release_transfer(true);
                     end_conversation("REC held for 2s");
                 }
                 break;
@@ -861,11 +925,13 @@ static void main_task(void *arg)
         device_mqtt_service_set_dispatch_allowed(
             wifi_service_get_state() == WIFI_STATE_GOT_IP &&
             !provisioning_service_is_active() && !cleanup_pending && !reminder_task &&
+            !transfer_task &&
             (!session_requested || conversation_active));
         device_mqtt_service_poll(device_handshake_service_is_enabled() && !device_handshake_service_is_blocked() &&
             wifi_service_get_state() == WIFI_STATE_GOT_IP && !provisioning_service_is_active(),
             device_handshake_service_mqtt_epoch(), device_handshake_service_get_configuration());
         poll_reminder();
+        poll_transfer();
         poll_conversation();
         save_volume_if_due(now);
         save_brightness_if_due(now);

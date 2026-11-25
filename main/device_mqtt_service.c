@@ -41,16 +41,18 @@ typedef struct {
 } mqtt_settings_t;
 static mqtt_settings_t *s_settings;
 static SemaphoreHandle_t s_settings_lock;
-static QueueHandle_t s_control, s_rx, s_ready, s_results;
+static QueueHandle_t s_control, s_rx, s_transfer_rx, s_ready, s_transfer_ready, s_results, s_transfer_results;
 static atomic_bool s_callback_overflow;
 static atomic_uint s_wake_serial;
 static atomic_bool s_dispatch_allowed;
 static atomic_bool s_network_active;
 static bool s_started;
 static device_mqtt_delivery_t *s_main_delivery; /* 仅主任务使用；最多一个借出对象。 */
+static device_mqtt_transfer_delivery_t *s_main_transfer;
 
 typedef struct { int id, msg_id, code, raw_code, tls_error, tls_flags; } mqtt_notice_t;
 typedef struct { device_mqtt_delivery_t *tasks; bool handled; } mqtt_result_t;
+typedef struct { device_mqtt_transfer_delivery_t *transfer; bool handled; } mqtt_transfer_result_t;
 /* worker 独占；assembly 仅 MQTT 回调写，stop/destroy 等回调退出后复位。 */
 typedef struct {
     mqtt_settings_t settings;
@@ -58,8 +60,11 @@ typedef struct {
     bool net_active;
     device_mqtt_retry_t retry;
     device_mqtt_assembly_t assembly;
+    bool assembly_transfer;
     bool connected, subscribed, subscription_rejected, pending_dirty, storage_ready, dispatch_paused;
+    bool transfer_unsupported;
     int status_id, subscribe_id;
+    int transfer_subscribe_id;
     int64_t connect_deadline, subscription_deadline, next_status, persist_at;
     int64_t status_sent_at;
     unsigned seen_wake;
@@ -76,9 +81,16 @@ static void mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     mqtt_worker_t *w = arg;
     esp_mqtt_event_handle_t e = data;
     if (id == MQTT_EVENT_DATA) {
-        bool allowed = !e->retain && e->qos <= 1 && e->topic && e->topic_len > 0 &&
-            (size_t)e->topic_len == strlen(w->settings.config.subscribe_topic) &&
-            !memcmp(e->topic, w->settings.config.subscribe_topic, e->topic_len);
+        const char *task_topic = w->settings.config.subscribe_topic;
+        const char *transfer_topic = w->settings.config.transfer_subscribe_topic;
+        bool task_match = e->topic && e->topic_len > 0 && task_topic[0] &&
+            (size_t)e->topic_len == strlen(task_topic) &&
+            !memcmp(e->topic, task_topic, e->topic_len);
+        bool transfer_match = e->topic && e->topic_len > 0 && transfer_topic[0] &&
+            (size_t)e->topic_len == strlen(transfer_topic) &&
+            !memcmp(e->topic, transfer_topic, e->topic_len);
+        if (e->current_data_offset == 0) w->assembly_transfer = transfer_match;
+        bool allowed = !e->retain && e->qos <= 1 && (task_match || transfer_match);
         if (e->total_data_len <= 0 || e->current_data_offset < 0 || e->data_len <= 0) {
             w->assembly.total = w->assembly.used = 0;
             return;
@@ -88,7 +100,8 @@ static void mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         if (result == DEVICE_MQTT_FRAGMENT_COMPLETE) {
             char *payload = device_handshake_alloc(w->assembly.used + 1);
             if (payload) memcpy(payload, w->assembly.data, w->assembly.used + 1);
-            if (!payload || xQueueSend(s_rx, &payload, 0) != pdTRUE) {
+            QueueHandle_t target = w->assembly_transfer ? s_transfer_rx : s_rx;
+            if (!payload || xQueueSend(target, &payload, 0) != pdTRUE) {
                 free(payload);
                 atomic_store(&s_callback_overflow, true);
             }
@@ -132,10 +145,16 @@ static void stop_client(mqtt_worker_t *w)
         w->client = NULL;
     }
     w->connected = w->subscribed = w->subscription_rejected = false;
-    w->status_id = w->subscribe_id = -1;
+    w->transfer_unsupported = false;
+    w->status_id = w->subscribe_id = w->transfer_subscribe_id = -1;
     w->connect_deadline = w->subscription_deadline = 0;
     memset(&w->assembly, 0, sizeof(w->assembly));
+    w->assembly_transfer = false;
     xQueueReset(s_control);
+    if (s_transfer_rx) {
+        char *stale;
+        while (xQueueReceive(s_transfer_rx, &stale, 0) == pdTRUE) free(stale);
+    }
     atomic_store(&s_callback_overflow, false);
 }
 
@@ -302,6 +321,16 @@ static void consume_result(mqtt_worker_t *w)
     w->active = NULL;
 }
 
+static void consume_transfer_result(mqtt_worker_t *w)
+{
+    mqtt_transfer_result_t event;
+    if (xQueueReceive(s_transfer_results, &event, 0) != pdTRUE) return;
+    if (!event.transfer) return;
+    /* 转接通知不持久化：取到即消费。handled=false 表示主线程因忙丢弃，也不重试。 */
+    (void)w;
+    free(event.transfer);
+}
+
 static void consume_task(mqtt_worker_t *w, char *payload)
 {
     device_mqtt_task_t *message = device_handshake_alloc(sizeof(*message));
@@ -333,6 +362,37 @@ static void consume_task(mqtt_worker_t *w, char *payload)
     ESP_LOGI(TAG, "Task notification queued: id=%s count=%u voice_adapter=%d; persistence pending", message->id,
              (unsigned)w->pending.count, DEVICE_MQTT_FORWARD_TASK_TO_WS);
     free(message);
+}
+
+static void consume_transfer(mqtt_worker_t *w, char *payload)
+{
+    device_mqtt_transfer_t parsed;
+    if (!device_mqtt_parse_transfer(payload, strlen(payload), &parsed)) {
+        ESP_LOGW(TAG, "Transfer notification rejected: invalid schema");
+        return;
+    }
+    time_t now = time(NULL);
+    if (now > 0 && parsed.expires_at_ms <= (int64_t)now * 1000) {
+        ESP_LOGE(TAG, "Transfer notification dropped: ticket expired id=%s", parsed.transfer_id);
+        return;
+    }
+    device_mqtt_transfer_delivery_t *delivery = device_handshake_alloc(sizeof(*delivery));
+    if (!delivery) {
+        ESP_LOGE(TAG, "Transfer notification dropped: out of memory id=%s", parsed.transfer_id);
+        return;
+    }
+    snprintf(delivery->device_id, sizeof(delivery->device_id), "%s", w->settings.config.username);
+    snprintf(delivery->transfer_id, sizeof(delivery->transfer_id), "%s", parsed.transfer_id);
+    snprintf(delivery->room_name, sizeof(delivery->room_name), "%s", parsed.room_name);
+    snprintf(delivery->ticket, sizeof(delivery->ticket), "%s", parsed.ticket);
+    delivery->expires_at_ms = parsed.expires_at_ms;
+    delivery->timeout_sec = parsed.timeout_sec;
+    if (xQueueSend(s_transfer_ready, &delivery, 0) != pdTRUE) {
+        free(delivery);
+        ESP_LOGW(TAG, "Transfer notification dropped: handoff queue full id=%s", parsed.transfer_id);
+        return;
+    }
+    ESP_LOGI(TAG, "Transfer notification ready: id=%s room=%s", parsed.transfer_id, parsed.room_name);
 }
 
 static void publish_status(mqtt_worker_t *w)
@@ -382,8 +442,28 @@ static void consume_notice(mqtt_worker_t *w, const mqtt_notice_t *event)
         w->subscription_deadline = now_ms() + 10000;
         w->next_status = 0;
         if (w->subscribe_id < 0) connection_failed(w, 0);
+        if (w->settings.config.transfer_subscribe_topic[0]) {
+            w->transfer_subscribe_id = esp_mqtt_client_subscribe(
+                w->client, w->settings.config.transfer_subscribe_topic, 1);
+            if (w->transfer_subscribe_id < 0)
+                ESP_LOGE(TAG, "Transfer subscribe failed; connection retained, transfer unavailable");
+        }
         break;
     case MQTT_EVENT_SUBSCRIBED:
+        if (w->transfer_subscribe_id >= 0 && event->msg_id == w->transfer_subscribe_id) {
+            w->transfer_subscribe_id = -1;
+            if (event->code < 0) {
+                w->transfer_unsupported = true;
+                ESP_LOGE(TAG, "Transfer SUBACK rejected: code=%d topic=%s; connection retained, "
+                         "reminder still available", event->raw_code,
+                         w->settings.config.transfer_subscribe_topic);
+            } else {
+                w->transfer_unsupported = false;
+                ESP_LOGI(TAG, "Transfer SUBACK granted QoS=%d: topic=%s", event->code,
+                         w->settings.config.transfer_subscribe_topic);
+            }
+            break;
+        }
         if (event->msg_id != w->subscribe_id) break;
         w->subscription_deadline = 0;
         if (event->code < 0) {
@@ -468,6 +548,7 @@ static void start_client(mqtt_worker_t *w)
 static void mqtt_worker_step(mqtt_worker_t *w, mqtt_settings_t *next)
 {
     consume_result(w);
+    consume_transfer_result(w);
     persist_state(w);
     xSemaphoreTake(s_settings_lock, portMAX_DELAY);
     bool changed = w->settings.revision != s_settings->revision;
@@ -479,6 +560,10 @@ static void mqtt_worker_step(mqtt_worker_t *w, mqtt_settings_t *next)
         char *payload;
         while (xQueueReceive(s_rx, &payload, 0) == pdTRUE) {
             if (w->settings.configured) consume_task(w, payload);
+            free(payload);
+        }
+        while (xQueueReceive(s_transfer_rx, &payload, 0) == pdTRUE) {
+            if (w->settings.configured) consume_transfer(w, payload);
             free(payload);
         }
         bool new_identity = next->configured &&
@@ -514,6 +599,10 @@ static void mqtt_worker_step(mqtt_worker_t *w, mqtt_settings_t *next)
     char *payload;
     while (xQueueReceive(s_rx, &payload, 0) == pdTRUE) {
         if (w->settings.configured) consume_task(w, payload);
+        free(payload);
+    }
+    while (xQueueReceive(s_transfer_rx, &payload, 0) == pdTRUE) {
+        if (w->settings.configured) consume_transfer(w, payload);
         free(payload);
     }
     if (atomic_exchange(&s_callback_overflow, false)) {
@@ -578,16 +667,23 @@ esp_err_t device_mqtt_service_init(void)
     s_settings_lock = xSemaphoreCreateMutex();
     s_control = xQueueCreate(MQTT_CONTROL_QUEUE_SIZE, sizeof(mqtt_notice_t));
     s_rx = xQueueCreate(DEVICE_TASK_QUEUE_SIZE, sizeof(char *));
+    s_transfer_rx = xQueueCreate(DEVICE_TASK_QUEUE_SIZE, sizeof(char *));
     s_ready = xQueueCreate(1, sizeof(device_mqtt_delivery_t *));
+    s_transfer_ready = xQueueCreate(1, sizeof(device_mqtt_transfer_delivery_t *));
     s_results = xQueueCreate(1, sizeof(mqtt_result_t));
+    s_transfer_results = xQueueCreate(1, sizeof(mqtt_transfer_result_t));
     if (!s_settings || !worker || !s_settings_lock || !s_control || !s_rx || !s_ready || !s_results ||
+        !s_transfer_rx || !s_transfer_ready || !s_transfer_results ||
         xTaskCreatePinnedToCore(mqtt_worker, "device_mqtt", 6144, worker, 2, NULL, 0) != pdPASS) {
         free(worker); free(s_settings); s_settings = NULL;
         if (s_settings_lock) vSemaphoreDelete(s_settings_lock);
         if (s_control) vQueueDelete(s_control);
         if (s_rx) vQueueDelete(s_rx);
+        if (s_transfer_rx) vQueueDelete(s_transfer_rx);
         if (s_ready) vQueueDelete(s_ready);
+        if (s_transfer_ready) vQueueDelete(s_transfer_ready);
         if (s_results) vQueueDelete(s_results);
+        if (s_transfer_results) vQueueDelete(s_transfer_results);
         return ESP_ERR_NO_MEM;
     }
     s_started = true;
@@ -642,4 +738,28 @@ void device_mqtt_service_release_tasks(device_mqtt_delivery_t *tasks, bool handl
     BaseType_t sent = xQueueSend(s_results, &event, 0);
     configASSERT(sent == pdTRUE);
     s_main_delivery = NULL;
+}
+
+device_mqtt_transfer_delivery_t *device_mqtt_service_take_transfer(void)
+{
+    if (!s_started || s_main_transfer) return NULL;
+    if (xQueueReceive(s_transfer_ready, &s_main_transfer, 0) != pdTRUE) return NULL;
+    xSemaphoreTake(s_settings_lock, portMAX_DELAY);
+    bool current = s_settings->enabled && s_settings->configured &&
+                   !strcmp(s_main_transfer->device_id, s_settings->config.username);
+    xSemaphoreGive(s_settings_lock);
+    if (!current) {
+        device_mqtt_service_release_transfer(s_main_transfer, false);
+        return NULL;
+    }
+    return s_main_transfer;
+}
+
+void device_mqtt_service_release_transfer(device_mqtt_transfer_delivery_t *transfer, bool handled)
+{
+    if (!transfer || transfer != s_main_transfer) return;
+    mqtt_transfer_result_t event = { .transfer = transfer, .handled = handled };
+    BaseType_t sent = xQueueSend(s_transfer_results, &event, 0);
+    configASSERT(sent == pdTRUE);
+    s_main_transfer = NULL;
 }
