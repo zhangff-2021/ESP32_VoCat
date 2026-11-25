@@ -31,12 +31,17 @@
 #ifndef DEVICE_HANDSHAKE_WS_REFRESH_MARGIN_SECONDS
 #define DEVICE_HANDSHAKE_WS_REFRESH_MARGIN_SECONDS 300u
 #endif
+#ifndef DEVICE_HANDSHAKE_WIFI_TOKEN_REUSE_SECONDS
+#define DEVICE_HANDSHAKE_WIFI_TOKEN_REUSE_SECONDS 120u
+#endif
 #ifndef DEVICE_HANDSHAKE_LOG_WS_TOKEN
 #define DEVICE_HANDSHAKE_LOG_WS_TOKEN 0
 #endif
 _Static_assert(DEVICE_HANDSHAKE_WS_REFRESH_MARGIN_SECONDS > 0 &&
                DEVICE_HANDSHAKE_WS_REFRESH_MARGIN_SECONDS <= UINT32_MAX,
                "WebSocket refresh margin must be a positive number of seconds");
+_Static_assert(DEVICE_HANDSHAKE_WIFI_TOKEN_REUSE_SECONDS <= DEVICE_HANDSHAKE_WS_REFRESH_MARGIN_SECONDS,
+               "Wi-Fi reuse window must stay inside the token refresh margin");
 
 static const char *TAG = "device_handshake";
 static device_handshake_config_t *s_config;
@@ -49,6 +54,7 @@ static esp_event_handler_instance_t s_wifi_handler, s_ip_handler;
 static atomic_uint s_network_epoch, s_cancel_generation;
 static unsigned s_seen_epoch;
 static unsigned s_mqtt_epoch;
+static int64_t s_last_online_ms;
 
 typedef struct {
     unsigned network_epoch;
@@ -81,6 +87,15 @@ static void on_network_event(void *arg, esp_event_base_t base, int32_t id, void 
     if ((base == WIFI_EVENT && (id == WIFI_EVENT_STA_DISCONNECTED || id == WIFI_EVENT_STA_STOP)) ||
         (base == IP_EVENT && (id == IP_EVENT_STA_GOT_IP || id == IP_EVENT_STA_LOST_IP)))
         atomic_fetch_add(&s_network_epoch, 1);
+}
+
+static bool snapshot_token_usable(bool require_fresh_network)
+{
+    if (!s_snapshot || s_schedule.blocked || !s_snapshot->result.success) return false;
+    if (require_fresh_network && s_seen_epoch != atomic_load(&s_network_epoch)) return false;
+    int64_t remaining = device_handshake_token_remaining_ms(
+        s_snapshot->result.response.websocket.expires_in, s_snapshot->acquired_ms, now_ms());
+    return remaining >= (int64_t)DEVICE_HANDSHAKE_WS_REFRESH_MARGIN_SECONDS * 1000;
 }
 
 /* 独立 namespace 是平台出厂身份；不读写 korvo_cfg/device_id（旧 YMOS 身份）。
@@ -272,8 +287,17 @@ esp_err_t device_handshake_service_init(void)
 
 const device_handshake_response_t *device_handshake_service_get_configuration(void)
 {
-    return s_snapshot && s_schedule.online && s_schedule.ready &&
-           s_seen_epoch == atomic_load(&s_network_epoch) ? &s_snapshot->result.response : NULL;
+    if (!s_snapshot || !s_schedule.online) return NULL;
+    bool fresh_network = s_seen_epoch == atomic_load(&s_network_epoch);
+    if (!snapshot_token_usable(fresh_network)) return NULL;
+    if (!s_schedule.ready) {
+        if (!fresh_network) return NULL;
+        if (now_ms() - s_last_online_ms > (int64_t)DEVICE_HANDSHAKE_WIFI_TOKEN_REUSE_SECONDS * 1000)
+            return NULL;
+        ESP_LOGW(TAG, "Reusing cached credentials during HTTP refresh (remaining window=%lld s)",
+                 (long long)((now_ms() - s_snapshot->acquired_ms) / 1000));
+    }
+    return &s_snapshot->result.response;
 }
 
 bool device_handshake_service_is_enabled(void) { return !s_disabled; }
@@ -314,16 +338,14 @@ void device_handshake_service_poll(bool network_available)
 {
     if (!s_initialized) return;
     unsigned epoch = atomic_load(&s_network_epoch);
+    if (network_available) s_last_online_ms = now_ms();
     if (epoch != s_seen_epoch || network_available != s_schedule.online) {
         ++s_mqtt_epoch;
         s_seen_epoch = epoch;
         device_handshake_network_changed(&s_schedule, network_available);
         atomic_store(&s_cancel_generation, s_schedule.generation);
-        /* 不在这里 clear_snapshot()：network_changed() 已经把 ready 置 false，
-         * get_configuration() 会拒绝旧凭据，不会误用。但 token 本身可能还有效
-         * （TTL 1h，WiFi 抖动常常只有几秒）——清掉会逼唤醒时重做一次完整
-         * HTTPS 握手（实测额外 ~11s：TLS 6.4s + 设备空等 4.5s）。
-         * 新结果到达时 clear_snapshot() 会替换旧快照；被平台拒绝时下面清。 */
+        /* 短时 Wi-Fi 抖动不清除仍有效的快照：D3 可先用缓存 token 建 WSS 预连接，
+         * 同时后台继续 HTTP 刷新。永久错误的结果仍要清掉，防止误用旧凭据。 */
         if (s_schedule.blocked) clear_snapshot();
     }
     handshake_attempt_t *finished = NULL;
@@ -351,6 +373,11 @@ void device_handshake_service_poll(bool network_available)
             if (settimeofday(&tv, NULL) != 0) ESP_LOGW(TAG, "Server time could not be applied");
             ESP_LOGI(TAG, "HTTP handshake ready; MQTT/WS configuration validated (RAM only); WS token TTL=%lu s",
                      (unsigned long)result->response.websocket.expires_in);
+            ESP_LOGI(TAG, "HTTP handshake timing: connect=%lld ms read=%lld ms queue=%lld ms total=%lld ms",
+                     (long long)result->connect_ms, (long long)result->read_ms,
+                     (long long)(now_ms() - finished->acquired_ms -
+                                 result->connect_ms - result->read_ms),
+                     (long long)(now_ms() - finished->acquired_ms));
 #if DEVICE_HANDSHAKE_LOG_WS_TOKEN
             /* 用户显式要求的串口联调诊断；仅私有配置开启，量产必须关闭。
              * 每次成功握手打印一次，绝不输出 PSK、MQTT password 或完整响应。 */

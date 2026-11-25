@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "mqtt_client.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
@@ -114,6 +115,11 @@ static void mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 static void stop_client(mqtt_worker_t *w)
 {
     if (w->client) {
+        multi_heap_info_t info;
+        heap_caps_get_info(&info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        ESP_LOGI(TAG, "MQTT stop heap: internal free=%u largest=%u min=%u",
+                 (unsigned)info.total_free_bytes, (unsigned)info.largest_free_block,
+                 (unsigned)info.minimum_free_bytes);
         /* 不在回调停止自身。destroy 完成后才允许替换回调借用的配置。 */
         esp_mqtt_client_stop(w->client);
         esp_mqtt_client_destroy(w->client);
@@ -407,6 +413,11 @@ static void consume_notice(mqtt_worker_t *w, const mqtt_notice_t *event)
 
 static void start_client(mqtt_worker_t *w)
 {
+    multi_heap_info_t info;
+    heap_caps_get_info(&info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "MQTT start heap: internal free=%u largest=%u min=%u",
+             (unsigned)info.total_free_bytes, (unsigned)info.largest_free_block,
+             (unsigned)info.minimum_free_bytes);
 #ifdef DEVICE_MQTT_HAS_CA
     const char *certificate = mqtt_ca;
 #else

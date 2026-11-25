@@ -40,6 +40,7 @@ static device_handshake_config_t config;
 static device_handshake_config_t *s_config;
 static device_handshake_schedule_t s_schedule;
 static unsigned s_seen_epoch, s_network_epoch, s_cancel_generation;
+static int64_t s_last_online_ms;
 typedef struct { int64_t acquired_ms; device_handshake_result_t result; } test_snapshot_t;
 static test_snapshot_t *s_snapshot;
 static void clear_snapshot(void)
@@ -122,11 +123,13 @@ static void fresh(void)
     s_initialized = true; s_disabled = false;
     s_seen_epoch = s_network_epoch = s_cancel_generation = 1;
     test_now = 1000;
+    s_last_online_ms = test_now;
     s_snapshot = calloc(1, sizeof(*s_snapshot)); CHECK(s_snapshot != NULL);
     s_snapshot->acquired_ms = 1000;
     strcpy(s_snapshot->result.response.websocket.url, "wss://gateway.example:8443/v1/realtime");
     strcpy(s_snapshot->result.response.websocket.token, "device-test-only");
     s_snapshot->result.response.websocket.expires_in = 3600;
+    s_snapshot->result.success = true;
     client = (esp_websocket_client_handle_t)(uintptr_t)1; state = WS_STATE_DISCONNECTED;
     client_started = credentials_from_handshake = fail_alloc = fail_client = fail_send = fail_stop = false;
     creates = stops = connects = recoveries = ends = 0;

@@ -53,8 +53,12 @@ void device_handshake_exchange(const device_handshake_http_t *http,
         { "connection", "close" }
     };
     int64_t declared_size = -1;
-    if (!http->begin(http->context, url, headers, sizeof(headers) / sizeof(headers[0]), body,
-                     &output->status, &declared_size)) goto done;
+    const int64_t begin_start = http->now_ms(http->context);
+    const bool begin_ok = http->begin(http->context, url, headers,
+                                      sizeof(headers) / sizeof(headers[0]), body,
+                                      &output->status, &declared_size);
+    output->connect_ms = http->now_ms(http->context) - begin_start;
+    if (!begin_ok) goto done;
     if (output->status >= 300 && output->status < 400) {
         output->reason = "redirect_rejected";
         goto done;
@@ -64,6 +68,7 @@ void device_handshake_exchange(const device_handshake_http_t *http,
         goto done;
     }
     const int64_t deadline = http->now_ms(http->context) + 15000;
+    const int64_t read_start = http->now_ms(http->context);
     char chunk[512];
     while (!http->cancelled(http->context) && http->now_ms(http->context) < deadline) {
         int count = http->read(http->context, chunk, sizeof(chunk));
@@ -91,6 +96,7 @@ void device_handshake_exchange(const device_handshake_http_t *http,
         memcpy(response + received, chunk, (size_t)count);
         received += (size_t)count;
     }
+    output->read_ms = http->now_ms(http->context) - read_start;
     if (output->status == 200) output->status = 0;
     output->reason = http->cancelled(http->context) ? "network_changed" : "response_timeout";
 done:

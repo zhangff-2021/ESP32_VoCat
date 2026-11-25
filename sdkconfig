@@ -2851,6 +2851,15 @@ CONFIG_VFS_INITIALIZE_DEV_NULL=y
 # end of Virtual file system
 
 #
+# ESP WebSocket client
+#
+# CONFIG_ESP_WS_CLIENT_ENABLE_DYNAMIC_BUFFER is not set
+CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y
+# default:
+CONFIG_ESP_WS_CLIENT_TX_LOCK_TIMEOUT_MS=2000
+# end of ESP WebSocket client
+
+#
 # Opus Audio Codec
 #
 # default:
@@ -2964,15 +2973,6 @@ CONFIG_CODEC_TAS5805M_SUPPORT=y
 # default:
 # CONFIG_CODEC_DATA_ADC_SUPPORT is not set
 # end of Audio Codec Device Configuration
-
-#
-# ESP WebSocket client
-#
-# CONFIG_ESP_WS_CLIENT_ENABLE_DYNAMIC_BUFFER is not set
-CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y
-# default:
-CONFIG_ESP_WS_CLIENT_TX_LOCK_TIMEOUT_MS=2000
-# end of ESP WebSocket client
 
 #
 # ESP-MQTT Configurations

@@ -1,4 +1,10 @@
 dependencies:
+  esp_websocket_client:
+    dependencies: []
+    source:
+      path: components/esp_websocket_client
+      type: local
+    version: 1.8.0
   esphome/micro-opus:
     component_hash: c4cec51b6e45b9b660bf8725a10c65f46485ff8b37ff664e4da3fd738301c71e
     dependencies:
@@ -138,16 +144,6 @@ dependencies:
     - esp32c61
     - esp32h4
     version: 1.0.2
-  espressif/esp_websocket_client:
-    component_hash: dc00233af846f3a744ada283a300e0d586040aadc3ee67361645ecdce4523672
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.0'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 1.8.0
   espressif/mqtt:
     component_hash: fb18bc3b65aa8c94693a9811ffc322cca8a65d92d5ec84983d3e385080e3969c
     dependencies:
@@ -179,6 +175,6 @@ direct_dependencies:
 - espressif/mqtt
 - idf
 - lvgl/lvgl
-manifest_hash: cdcc453672333c1ac82b5732771974f6bfc42539459dd0cabd42009d7e89e6e3
+manifest_hash: c65922374575d07131f887cdc1eee3c041fc83613b07a39ddce210b059af6440
 target: esp32s3
 version: 3.0.0

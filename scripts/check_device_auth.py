@@ -33,7 +33,7 @@ def main():
     groups = {
         "device_handshake_service.c": ("device_handshake_service_get_configuration",
             "device_handshake_service_is_enabled", "device_handshake_service_renew_credentials",
-            "device_handshake_service_prepare_websocket"),
+            "device_handshake_service_prepare_websocket", "snapshot_token_usable"),
         "ws_service.c": ("release_credentials", "ws_service_set_credentials", "ws_service_authenticate",
             "ws_service_preconnect", "ws_service_activate_preconnect",
             "ws_service_get_preconnect_expires_in"),

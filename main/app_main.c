@@ -166,8 +166,9 @@ static void release_reminder(bool handled)
 /* 停止超时不能清 FIFO 或切采样基准；关闭 transport 后允许上传任务退出。 */
 static void stop_session_audio(void)
 {
+    bool disconnect_now = ws_service_get_state() != WS_STATE_DISCONNECTED;
     (void)audio_in_stop(audio_in_get_handle());
-    esp_err_t transport = ws_service_disconnect();
+    esp_err_t transport = disconnect_now ? ws_service_disconnect() : ESP_OK;
     esp_err_t input = app_state_back_to_wait_wake();
     cleanup_pending = transport != ESP_OK || input != ESP_OK;
     if (cleanup_pending) {
@@ -680,13 +681,19 @@ static void main_task(void *arg)
             case EV_WIFI_GOT_IP:
                 if (provisioning_service_is_active() || wifi_service_get_state() != WIFI_STATE_GOT_IP) break;
                 provisioning_service_confirm();
+                const device_handshake_response_t *cached_configuration = NULL;
                 d3_preconnect_ready = false;
                 d3_preconnect_deadline_ms = 0;
                 d3_retry_pending = false;
                 d3_preconnect_url[0] = 0;
                 d3_preconnect_token[0] = 0;
-                device_handshake_service_renew_credentials();
-                prepare_standby_websocket();
+                if (device_handshake_service_prepare_websocket(&cached_configuration) == DEVICE_WS_READY) {
+                    ESP_LOGI(TAG, "Wi-Fi ready; reusing cached credentials for D3 preconnect");
+                    prepare_standby_websocket();
+                    device_handshake_service_renew_credentials();
+                } else {
+                    device_handshake_service_renew_credentials();
+                }
                 /* D3 主链路：联网后立即建立 WSS 预连接；重复 IP 事件不能打断正在进行的对话。 */
                 if (!session_requested) {
                     ESP_LOGI(TAG, "Wi-Fi ready; waiting for wake word before connecting");

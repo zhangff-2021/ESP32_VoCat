@@ -24,6 +24,8 @@ typedef struct {
     int status;       /* 0=网络/资源/读取失败；已收到的永久 HTTP 错误不会被降级为 0。 */
     bool success;
     const char *reason; /* 固定字符串，可安全输出日志。 */
+    int64_t connect_ms; /* begin 内 DNS/TCP/TLS/请求发送/收头的合计耗时。 */
+    int64_t read_ms;    /* body 读取与解析耗时。 */
     device_handshake_response_t response;
 } device_handshake_result_t;
 

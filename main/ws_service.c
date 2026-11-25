@@ -646,7 +646,15 @@ esp_err_t ws_service_send_json(const char *text)
     if (!client || state != WS_STATE_CONNECTED) return ESP_ERR_INVALID_STATE;
     if (!text) return ESP_ERR_INVALID_ARG;
     size_t len = strlen(text);
-    return esp_websocket_client_send_text(client, text, len, pdMS_TO_TICKS(1000)) == (int)len ? ESP_OK : ESP_FAIL;
+    int sent = esp_websocket_client_send_text(client, text, len, pdMS_TO_TICKS(1000));
+    if (sent == (int)len) return ESP_OK;
+    int poll_write = -1;
+    esp_transport_handle_t transport = esp_websocket_client_get_transport(client);
+    if (transport) poll_write = esp_transport_poll_write(transport, 0);
+    ESP_LOGE(TAG, "send_json failed: len=%u sent=%d state=%d generation=%u connected=%d poll_write=%d",
+             (unsigned)len, sent, atomic_load(&state), atomic_load(&generation),
+             esp_websocket_client_is_connected(client), poll_write);
+    return ESP_FAIL;
 }
 esp_err_t ws_service_send_opus_frame(const uint8_t *data, size_t len)
 {
@@ -679,7 +687,8 @@ esp_err_t ws_service_prepare_reminder(const char *device_id,
             if (*p < '0' || *p > '9') return ESP_ERR_INVALID_ARG;
     }
     xSemaphoreTake(playback_lock, portMAX_DELAY);
-    if (state != WS_STATE_DISCONNECTED || client_started || reminder_task_count) {
+    if ((state != WS_STATE_DISCONNECTED && state != WS_STATE_PRECONNECTED) ||
+        (state == WS_STATE_DISCONNECTED && client_started) || reminder_task_count) {
         xSemaphoreGive(playback_lock);
         return ESP_ERR_INVALID_STATE;
     }
