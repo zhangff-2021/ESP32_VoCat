@@ -16,7 +16,6 @@
 #include "esp_timer.h"
 #include "sdkconfig.h"
 #include <stdlib.h>
-#include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
 
@@ -196,7 +195,7 @@ static void log_server_error(const proto_msg_t *msg)
     if (len >= sizeof(message)) len = sizeof(message) - 1;
     if (len) memcpy(message, msg->error_msg, len);
     /* 提醒错误可能回显含 token 的 auth；只保留错误码。 */
-    bool sensitive = reminder_task_count || strstr(message, "sk-") ||
+    bool sensitive = reminder_task_count || transfer_prepared || strstr(message, "sk-") ||
                      strstr(message, "password") || strstr(message, "Bearer");
     const cfg_key_t keys[] = { CFG_KEY_ACOS_TOKEN, CFG_KEY_WIFI_PASSWORD };
     for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
@@ -545,7 +544,6 @@ esp_err_t ws_service_authenticate(void)
     if (transfer_prepared) {
         char ticket[PROTO_TRANSFER_TICKET_MAX + 1];
         snprintf(ticket, sizeof(ticket), "%s", transfer_join_ticket);
-        /* 一次性：auth 帧构造后立即焚毁，发送失败也不重放同一张票。 */
         memset(transfer_join_ticket, 0, sizeof(transfer_join_ticket));
         transfer_prepared = false;
         len = proto_build_transfer_auth_frame(auth, capacity, token, transfer_device_id, ticket);
@@ -700,7 +698,6 @@ esp_err_t ws_service_prepare_reminder(const char *device_id,
     if (!device_id || !device_id[0] || strlen(device_id) >= sizeof(reminder_device_id) ||
         !task_ids || !task_count || task_count > PROTO_REMINDER_TASK_IDS_MAX)
         return ESP_ERR_INVALID_ARG;
-    if (transfer_prepared) return ESP_ERR_INVALID_STATE;
     for (size_t i = 0; i < task_count; ++i) {
         if (!task_ids[i] || !task_ids[i][0] || strlen(task_ids[i]) > 128) return ESP_ERR_INVALID_ARG;
         for (const unsigned char *p = (const unsigned char *)task_ids[i]; *p; ++p)
@@ -708,7 +705,7 @@ esp_err_t ws_service_prepare_reminder(const char *device_id,
     }
     xSemaphoreTake(playback_lock, portMAX_DELAY);
     if ((state != WS_STATE_DISCONNECTED && state != WS_STATE_PRECONNECTED) ||
-        (state == WS_STATE_DISCONNECTED && client_started) || reminder_task_count) {
+        (state == WS_STATE_DISCONNECTED && client_started) || reminder_task_count || transfer_prepared) {
         xSemaphoreGive(playback_lock);
         return ESP_ERR_INVALID_STATE;
     }

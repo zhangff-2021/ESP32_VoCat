@@ -122,7 +122,7 @@ size_t proto_build_preconnect_auth_frame(char *buf, size_t buf_size, const char 
 size_t proto_build_reminder_auth_frame(char *buf, size_t buf_size, const char *token,
                                        const char *device_id,
                                        const char *const *task_ids, size_t task_count);
-/* 转接场景：带房间加入票据，加入既有房间；不携带提醒 task_ids。 */
+/* 转接场景：首条 auth 携带 join_ticket 加入既有房间；不携带 task_ids。 */
 size_t proto_build_transfer_auth_frame(char *buf, size_t buf_size, const char *token,
                                        const char *device_id, const char *join_ticket);
 

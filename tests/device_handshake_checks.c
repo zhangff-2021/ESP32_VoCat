@@ -152,12 +152,6 @@ static void response_checks(void)
     CHECK(strcmp(response.websocket.token, "test-only-token") == 0);
     CHECK(response.websocket.expires_in == 3600);
     CHECK(!response.firmware.url[0] && !response.firmware.version[0]);
-    /* 工单 05：老平台不下发转接主题时照常工作；新平台字段必须属于本设备。 */
-    CHECK(response.mqtt.transfer_subscribe_topic[0] == 0);
-    check_response_change("mqtt", "transfer_subscribe_topic", "devices/dev-001/transfer", true);
-    check_response_change("mqtt", "transfer_subscribe_topic", "devices/dev-other/transfer", false);
-    check_response_change("mqtt", "transfer_subscribe_topic", "", false);
-    check_response_change("mqtt", "transfer_subscribe_topic", "devices/+/transfer", false);
     CHECK(!parse_response(RESPONSE_JSON, "DEV-001", &response));
     const char *fields[] = { "endpoint", "client_id", "username", "password", "publish_topic", "subscribe_topic" };
     for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {

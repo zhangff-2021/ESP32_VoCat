@@ -17,7 +17,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -138,8 +137,6 @@ static bool conversation_active;
 static bool session_requested;
 /* 只持有建连时的任务通知；鉴权后交还 MQTT，不跟踪播报结果。 */
 static device_mqtt_delivery_t *reminder_task;
-/* 转接通知只保留到首条 auth 使用票据；忙时收到立即丢弃，不打断当前通话。 */
-static device_mqtt_transfer_delivery_t *transfer_task;
 static uint32_t session_started_ms;
 /* 每次主动唤醒最多因鉴权失败重新握手一次；普通网络恢复不消耗该次数。 */
 static bool voice_auth_refresh_used, awaiting_voice_auth, waiting_for_credentials;
@@ -154,9 +151,11 @@ static char d3_preconnect_url[PROTO_WS_URL_MAX + 1];
 static char d3_preconnect_token[PROTO_AUTH_TOKEN_MAX + 1];
 static bool d3_retry_pending;
 static bool mqtt_network_active;
+static bool transfer_session_requested;
 
 #define D3_PRECONNECT_DEFAULT_REFRESH_SEC 600u
 #define D3_PRECONNECT_REFRESH_FLOOR_SEC 60u
+#define D3_PRECONNECT_RETRY_MS 10000
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
@@ -167,31 +166,42 @@ static void release_reminder(bool handled)
     reminder_task = NULL;
 }
 
-static void release_transfer(bool handled)
-{
-    if (!transfer_task) return;
-    device_mqtt_service_release_transfer(transfer_task, handled);
-    transfer_task = NULL;
-}
-
 static bool prepare_transfer_once(void)
 {
-    if (!transfer_task) return false;
-    if (!transfer_task->ticket[0]) {
-        /* 票据已经交给 WS 层，任何失败重试都不能重放。 */
-        release_transfer(true);
-        return false;
-    }
-    esp_err_t prepared = ws_service_prepare_transfer(transfer_task->device_id,
-                                                      transfer_task->ticket);
-    /* 无论 WS 后续连接成败，这张票都已交给 WS 层且只能使用一次。 */
-    transfer_task->ticket[0] = 0;
-    if (prepared != ESP_OK) {
+    if (!reminder_task || !reminder_task->join_ticket[0]) return false;
+    char ticket[DEVICE_TASK_TICKET_MAX + 1];
+    snprintf(ticket, sizeof(ticket), "%s", reminder_task->join_ticket);
+    esp_err_t prepared = ws_service_prepare_transfer(reminder_task->device_id, ticket);
+    if (prepared == ESP_OK) {
+        transfer_session_requested = true;
+        /* 票据交给 WS 后焚毁本地副本；鉴权失败也不重放。 */
+        reminder_task->join_ticket[0] = 0;
+    } else {
         ESP_LOGW(TAG, "Transfer auth preparation failed: %s", esp_err_to_name(prepared));
-        release_transfer(true);
         return false;
     }
+    memset(ticket, 0, sizeof(ticket));
     return true;
+}
+
+static void prepare_reminder_once(void)
+{
+    if (!reminder_task || reminder_task->count == 0) return;
+    if (reminder_task->join_ticket[0]) {
+        ESP_LOGW(TAG, "Preconnect unavailable when auth was prepared; dropping transfer id=%s",
+                 reminder_task->task_ids[0]);
+        device_mqtt_service_report_inbound_failure(reminder_task,
+                                                    "transfer_preconnect_unavailable", false);
+        release_reminder(true);
+        return;
+    }
+    const char *task_ids[DEVICE_TASK_QUEUE_SIZE];
+    for (unsigned i = 0; i < reminder_task->count; ++i)
+        task_ids[i] = reminder_task->task_ids[i];
+    esp_err_t prepared = ws_service_prepare_reminder(reminder_task->device_id,
+                                                     task_ids, reminder_task->count);
+    if (prepared != ESP_OK)
+        ESP_LOGW(TAG, "Reminder auth preparation failed: %s", esp_err_to_name(prepared));
 }
 
 /* 停止超时不能清 FIFO 或切采样基准；关闭 transport 后允许上传任务退出。 */
@@ -219,8 +229,8 @@ static void end_conversation(const char *reason)
     device_mqtt_service_set_dispatch_allowed(false);
     /* 尚未关联到会话的任务保留；主动触屏取消由调用者先消费通知。 */
     release_reminder(false);
-    release_transfer(false);
     session_requested = conversation_active = false;
+    transfer_session_requested = false;
     d3_preconnect_ready = false;
     d3_preconnect_deadline_ms = 0;
     d3_preconnect_url[0] = 0;
@@ -254,6 +264,11 @@ static void recover_session(const char *reason)
 static void handle_voice_auth_failure(const char *reason)
 {
     if (!session_requested) return;
+    if (transfer_session_requested) {
+        ESP_LOGE(TAG, "Transfer ticket rejected; dropping one-time transfer");
+        end_conversation(reason);
+        return;
+    }
     if (!device_handshake_service_is_enabled() || voice_auth_refresh_used) {
         ESP_LOGE(TAG, "Voice authentication failed; automatic retries stopped (check gateway auth protocol)");
         end_conversation(reason);
@@ -311,7 +326,7 @@ static void prepare_standby_websocket(void)
         d3_retry_pending = false;
     } else {
         ESP_LOGW(TAG, "D3 standby WebSocket preparation failed: %s", esp_err_to_name(err));
-        standby_retry_at_ms = now_ms() + 5000;
+        standby_retry_at_ms = now_ms() + D3_PRECONNECT_RETRY_MS;
         d3_retry_pending = true;
     }
 }
@@ -323,12 +338,16 @@ static void schedule_standby_preconnect_retry(const char *reason)
     d3_preconnect_deadline_ms = 0;
     d3_preconnect_url[0] = 0;
     d3_preconnect_token[0] = 0;
-    retry_at_ms = now_ms() + 5000;
+    retry_at_ms = now_ms() + D3_PRECONNECT_RETRY_MS;
     standby_retry_at_ms = retry_at_ms;
     d3_retry_pending = true;
     auth_deadline_ms = 0;
     awaiting_voice_auth = false;
     ESP_LOGW(TAG, "D3 preconnect %s; retry scheduled", reason);
+    if (wifi_service_get_state() == WIFI_STATE_GOT_IP) {
+        app_state_back_to_wait_wake();
+        led_set_waiting_wake();
+    }
 }
 
 static int64_t d3_preconnect_refresh_delay_ms(void)
@@ -348,6 +367,11 @@ static void retry_voice_connection(int64_t now)
     const device_handshake_response_t *configuration = NULL;
     device_ws_readiness_t readiness = device_handshake_service_prepare_websocket(&configuration);
     if (readiness == DEVICE_WS_BLOCKED) {
+        if (transfer_session_requested) {
+            ESP_LOGW(TAG, "Transfer dropped: device handshake blocked");
+            end_conversation("transfer device handshake blocked");
+            return;
+        }
         end_conversation("device handshake blocked; check configuration/platform");
         return;
     }
@@ -369,14 +393,8 @@ static void retry_voice_connection(int64_t now)
                  readiness == DEVICE_WS_READY ? "device handshake" : "legacy NVS (handshake disabled)");
         if (prepare_transfer_once()) {
             /* join_ticket 已在首条 auth 中使用；不再携带提醒 task_ids。 */
-        } else if (reminder_task) {
-            const char *task_ids[DEVICE_TASK_QUEUE_SIZE];
-            for (unsigned i = 0; i < reminder_task->count; ++i)
-                task_ids[i] = reminder_task->task_ids[i];
-            esp_err_t prepared = ws_service_prepare_reminder(reminder_task->device_id,
-                                                             task_ids, reminder_task->count);
-            if (prepared != ESP_OK)
-                ESP_LOGW(TAG, "D3 reminder auth preparation failed: %s", esp_err_to_name(prepared));
+        } else {
+            prepare_reminder_once();
         }
         esp_err_t activate = ws_service_activate_preconnect();
         if (activate == ESP_OK) {
@@ -387,6 +405,11 @@ static void retry_voice_connection(int64_t now)
         }
         ESP_LOGW(TAG, "D3 preconnect activation failed: %s; reconnecting",
                  esp_err_to_name(activate));
+        if (transfer_session_requested) {
+            ESP_LOGW(TAG, "Transfer dropped: preconnect activation failed");
+            end_conversation("transfer preconnect activation failed");
+            return;
+        }
     }
     ESP_LOGI(TAG, "Connecting WebSocket; credentials=%s",
              readiness == DEVICE_WS_READY ? "device handshake" : "legacy NVS (handshake disabled)");
@@ -395,13 +418,12 @@ static void retry_voice_connection(int64_t now)
     if (err == ESP_OK) err = ws_service_set_credentials(
         configuration ? configuration->websocket.url : NULL,
         configuration ? configuration->websocket.token : NULL);
-    if (err == ESP_OK && transfer_task) {
-        if (!prepare_transfer_once()) err = ESP_OK;
-    } else if (err == ESP_OK && reminder_task) {
-        const char *task_ids[DEVICE_TASK_QUEUE_SIZE];
-        for (unsigned i = 0; i < reminder_task->count; ++i)
-            task_ids[i] = reminder_task->task_ids[i];
-        err = ws_service_prepare_reminder(reminder_task->device_id, task_ids, reminder_task->count);
+    if (err == ESP_OK) {
+        if (prepare_transfer_once()) {
+            /* join_ticket 已在首条 auth 中使用，不携带 task_ids。 */
+        } else {
+            prepare_reminder_once();
+        }
     }
     if (err == ESP_OK) {
         wifi_service_set_net_active(true);
@@ -414,7 +436,12 @@ static void retry_voice_connection(int64_t now)
         auth_deadline_ms = now_ms() + 20000;
     } else {
         ESP_LOGW(TAG, "WebSocket prepare/start failed: %s", esp_err_to_name(err));
-        retry_at_ms = now_ms() + 5000;
+        if (transfer_session_requested) {
+            ESP_LOGW(TAG, "Transfer dropped: websocket prepare/start failed");
+            end_conversation("transfer websocket start failed");
+        } else {
+            retry_at_ms = now_ms() + 5000;
+        }
     }
 }
 
@@ -436,7 +463,6 @@ static void start_audio_session(const char *reason)
     session_started_ms = (uint32_t)now_ms();
     resume_deadline_ms = 0;
     release_reminder(true); /* 仅表示通知已关联到会话，绝非播放完成 ACK。 */
-    release_transfer(true);
     led_set_listening();
     ESP_LOGI(TAG, "Full-duplex session active; source=%s; continuous microphone and playback", reason);
     ESP_LOGI(TAG, "Idle timeout: %u s; input=platform speech_started/stopped, output=PCM level",
@@ -520,7 +546,6 @@ static void handle_talk_action(const char *reason)
     if (provisioning_service_is_active()) return;
     if (session_requested) {
         release_reminder(true); /* 用户拒绝本次唤醒，不能又被同一通知自动拉起。 */
-        release_transfer(true);
         end_conversation(reason);
     } else {
         device_mqtt_service_on_wake();
@@ -542,7 +567,6 @@ static void enter_provisioning(const char *reason)
 {
     if (provisioning_service_is_active()) return;
     release_reminder(true);
-    release_transfer(true);
     end_conversation(reason);
     esp_err_t err = provisioning_service_start();
     if (err == ESP_OK) {
@@ -678,7 +702,7 @@ static bool tagged_ws_event(event_type_t id)
 /* MQTT 只触发唤醒；在线会话由平台直接插播，不重连、不重复提交 task_ids。 */
 static void poll_reminder(void)
 {
-    if (transfer_task || reminder_task || cleanup_pending || provisioning_service_is_active() ||
+    if (reminder_task || cleanup_pending || provisioning_service_is_active() ||
         wifi_service_get_state() != WIFI_STATE_GOT_IP ||
         !device_mqtt_service_voice_enabled()) return;
     if (session_requested && !conversation_active) return; /* 等当前连接认证。 */
@@ -686,39 +710,32 @@ static void poll_reminder(void)
     reminder_task = device_mqtt_service_take_tasks();
     if (!reminder_task) return;
     if (conversation_active) {
+        if (reminder_task->join_ticket[0]) {
+            ESP_LOGW(TAG, "Transfer dropped: busy (id=%s; ticket not replayed)",
+                     reminder_task->task_ids[0]);
+            release_reminder(true);
+            return;
+        }
         ESP_LOGI(TAG, "Task notification handled by active session: count=%u; platform pushes audio",
                  reminder_task->count);
+        release_reminder(true);
+        return;
+    }
+    if (!d3_preconnect_ready || ws_service_get_state() != WS_STATE_PRECONNECTED) {
+        bool is_transfer = reminder_task->join_ticket[0] != 0;
+        ESP_LOGW(TAG, "%s dropped: D3 preconnect unavailable%s",
+                 is_transfer ? "Transfer" : "Task notification",
+                 is_transfer ? "; ticket not replayed" : "");
+        device_mqtt_service_report_inbound_failure(reminder_task,
+                                                    is_transfer ? "transfer_preconnect_unavailable" :
+                                                                  "task_preconnect_unavailable",
+                                                    !is_transfer);
         release_reminder(true);
         return;
     }
     ESP_LOGI(TAG, "Task notification wakes full-duplex session: count=%u", reminder_task->count);
     start_conversation("MQTT notification");
     if (!session_requested) release_reminder(false);
-}
-
-static void poll_transfer(void)
-{
-    if (transfer_task || cleanup_pending || provisioning_service_is_active() ||
-        wifi_service_get_state() != WIFI_STATE_GOT_IP ||
-        !device_mqtt_service_voice_enabled()) return;
-    transfer_task = device_mqtt_service_take_transfer();
-    if (!transfer_task) return;
-    time_t now_unix = time(NULL);
-    if (now_unix > 0 && transfer_task->expires_at_ms <= (int64_t)now_unix * 1000) {
-        ESP_LOGE(TAG, "Transfer dropped: ticket expired id=%s", transfer_task->transfer_id);
-        release_transfer(true);
-        return;
-    }
-    if (session_requested) {
-        ESP_LOGW(TAG, "transfer dropped: busy (id=%s; ticket not replayed)",
-                 transfer_task->transfer_id);
-        release_transfer(true);
-        return;
-    }
-    ESP_LOGI(TAG, "Transfer notification starts session: id=%s room=%s",
-             transfer_task->transfer_id, transfer_task->room_name);
-    start_conversation("MQTT transfer");
-    if (!session_requested) release_transfer(false);
 }
 
 static void main_task(void *arg)
@@ -814,7 +831,6 @@ static void main_task(void *arg)
             case EV_BUTTON_END_TALK:
                 if (!provisioning_service_is_active()) {
                     release_reminder(true);
-                    release_transfer(true);
                     end_conversation("REC held for 2s");
                 }
                 break;
@@ -831,13 +847,13 @@ static void main_task(void *arg)
                 ESP_LOGI(TAG, "WebSocket transport connected; authenticating");
                 wifi_service_set_net_active(false);
                 awaiting_voice_auth = true;
-                auth_deadline_ms = now_ms() + 10000;
                 if (session_requested) {
+                    auth_deadline_ms = now_ms() + 10000;
                     if (ws_service_authenticate() != ESP_OK) recover_session("auth send failed");
                 } else if (ws_service_preconnect() != ESP_OK) {
                     d3_preconnect_ready = false;
                     d3_preconnect_deadline_ms = 0;
-                    retry_at_ms = now_ms() + 5000;
+                    retry_at_ms = now_ms() + D3_PRECONNECT_RETRY_MS;
                     ESP_LOGW(TAG, "D3 preconnect auth send failed; retry scheduled");
                 }
                 break;
@@ -878,17 +894,15 @@ static void main_task(void *arg)
                 d3_retry_pending = false;
                 d3_preconnect_url[0] = 0;
                 d3_preconnect_token[0] = 0;
-                mqtt_network_active = false;
-                device_mqtt_service_set_network_active(false);
                 schedule_standby_preconnect_retry("transport disconnected");
-                recover_session("WebSocket transport disconnected");
+                if (session_requested) recover_session("WebSocket transport disconnected");
                 break;
             case EV_WS_ERROR:
                 schedule_standby_preconnect_retry("transport error");
-                recover_session("WebSocket transport/receive failure");
+                if (session_requested) recover_session("WebSocket transport/receive failure");
                 break;
             case EV_WS_SERVER_ERROR:
-                recover_session("server protocol error (see ws_service error code)");
+                if (session_requested) recover_session("server protocol error (see ws_service error code)");
                 break;
             case EV_WS_AUTH_FAILED:
                 d3_preconnect_ready = false;
@@ -896,11 +910,9 @@ static void main_task(void *arg)
                 d3_retry_pending = false;
                 d3_preconnect_url[0] = 0;
                 d3_preconnect_token[0] = 0;
-                mqtt_network_active = false;
-                device_mqtt_service_set_network_active(false);
                 device_handshake_service_clear_cached_credentials();
                 schedule_standby_preconnect_retry("authentication rejected");
-                handle_voice_auth_failure("gateway authentication rejected");
+                if (session_requested) handle_voice_auth_failure("gateway authentication rejected");
                 break;
             case EV_AUDIO_UPLOAD_FAILED:
                 recover_session("audio upload failed");
@@ -925,13 +937,11 @@ static void main_task(void *arg)
         device_mqtt_service_set_dispatch_allowed(
             wifi_service_get_state() == WIFI_STATE_GOT_IP &&
             !provisioning_service_is_active() && !cleanup_pending && !reminder_task &&
-            !transfer_task &&
             (!session_requested || conversation_active));
         device_mqtt_service_poll(device_handshake_service_is_enabled() && !device_handshake_service_is_blocked() &&
             wifi_service_get_state() == WIFI_STATE_GOT_IP && !provisioning_service_is_active(),
             device_handshake_service_mqtt_epoch(), device_handshake_service_get_configuration());
         poll_reminder();
-        poll_transfer();
         poll_conversation();
         save_volume_if_due(now);
         save_brightness_if_due(now);
@@ -960,7 +970,9 @@ static void main_task(void *arg)
                 d3_retry_pending = false;
                 d3_preconnect_url[0] = 0;
                 d3_preconnect_token[0] = 0;
-                retry_at_ms = now + 5000;
+                retry_at_ms = now + D3_PRECONNECT_RETRY_MS;
+                standby_retry_at_ms = retry_at_ms;
+                d3_retry_pending = true;
                 auth_deadline_ms = 0;
                 ESP_LOGW(TAG, "D3 preconnect timeout; retry scheduled");
             } else recover_session("WebSocket connection timed out");

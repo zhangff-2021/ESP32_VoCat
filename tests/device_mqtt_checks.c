@@ -7,38 +7,8 @@
 static unsigned checks;
 #define CHECK(x) do { ++checks; if (!(x)) { fprintf(stderr, "FAIL %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 static const char *message = "{\"task_id\":\"42\",\"kind\":\"reminder\",\"content\":\"该吃午饭了\",\"fire_at\":\"2020-11-03T06:00:00.000Z\"}";
-static const char *transfer =
-    "{\"kind\":\"transfer\",\"transfer_id\":\"tr-20261122-0007\","
-    "\"room_name\":\"gw-48127394\",\"ticket\":\"v2.payload.sig\","
-    "\"expires_at\":\"2026-11-22T03:12:40.000Z\",\"timeout_sec\":30}";
-
-static void transfer_checks(void)
-{
-    device_mqtt_transfer_t value;
-    CHECK(device_mqtt_parse_transfer(transfer, strlen(transfer), &value));
-    CHECK(!strcmp(value.transfer_id, "tr-20261122-0007"));
-    CHECK(!strcmp(value.room_name, "gw-48127394"));
-    CHECK(!strcmp(value.ticket, "v2.payload.sig"));
-    CHECK(value.timeout_sec == 30 && value.expires_at_ms > 0);
-    /* reminder 解析器不能接受 transfer 载荷。 */
-    device_mqtt_task_t task;
-    CHECK(!device_mqtt_parse_task(transfer, strlen(transfer), &task));
-    const char *invalid[] = {
-        message,
-        "{\"kind\":\"reminder\",\"transfer_id\":\"x\",\"room_name\":\"r\","
-        "\"ticket\":\"v2.a.b\",\"expires_at\":\"2026-11-22T03:12:40Z\"}",
-        "{\"kind\":\"transfer\",\"transfer_id\":\"x\",\"room_name\":\"r\","
-        "\"ticket\":\"v1.a.b\",\"expires_at\":\"2026-11-22T03:12:40Z\"}",
-        "{\"kind\":\"transfer\",\"transfer_id\":\"x\",\"room_name\":\"r\","
-        "\"ticket\":\"v2.a.b\",\"expires_at\":\"yesterday\"}",
-        "{\"kind\":\"transfer\",\"room_name\":\"r\","
-        "\"ticket\":\"v2.a.b\",\"expires_at\":\"2026-11-22T03:12:40Z\"}",
-        "{\"kind\":\"transfer\",\"transfer_id\":\"x\",\"room_name\":\"r\","
-        "\"ticket\":\"v2.a.b\",\"expires_at\":\"2026-11-22T03:12:40Z\",\"timeout_sec\":-1}"
-    };
-    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i)
-        CHECK(!device_mqtt_parse_transfer(invalid[i], strlen(invalid[i]), &value));
-}
+static const char *transfer = "{\"task_id\":\"tr-1\",\"kind\":\"transfer\","
+    "\"join_ticket\":\"v2.eyJqIjoiam9pbi1qdGktMSJ9.sig\"}";
 
 static void parser_checks(void)
 {
@@ -54,6 +24,18 @@ static void parser_checks(void)
         CHECK(!device_mqtt_parse_task(invalid[i], strlen(invalid[i]), &task));
     for (size_t n = 0; n < strlen(message); ++n) CHECK(!device_mqtt_parse_task(message, n, &task));
     CHECK(!device_mqtt_parse_task(message, DEVICE_TASK_PAYLOAD_MAX + 1, &task));
+    CHECK(device_mqtt_parse_task(transfer, strlen(transfer), &task));
+    CHECK(!strcmp(task.id, "tr-1") && !strcmp(task.join_ticket, "v2.eyJqIjoiam9pbi1qdGktMSJ9.sig"));
+    CHECK(!strcmp(task.jti, "join-jti-1"));
+    const char *invalid_transfer = "{\"task_id\":\"tr-1\",\"kind\":\"transfer\","
+        "\"join_ticket\":\"bad.payload.sig\"}";
+    CHECK(!device_mqtt_parse_task(invalid_transfer, strlen(invalid_transfer), &task));
+    const char *legacy_transfer = "{\"kind\":\"transfer\",\"transfer_id\":\"tr-1\","
+        "\"room_name\":\"gw-1\",\"ticket\":\"v2.payload.sig\","
+        "\"expires_at\":\"2026-11-22T03:12:40.000Z\",\"timeout_sec\":30}";
+    CHECK(!device_mqtt_parse_task(legacy_transfer, strlen(legacy_transfer), &task));
+    CHECK(!device_mqtt_parse_task(message, strlen(message), &task));
+    CHECK(task.join_ticket[0] == 0);
     const char *keys[] = { "task_id", "kind", "content", "fire_at" };
     for (unsigned i = 0; i < 4; ++i) {
         cJSON *json = cJSON_Parse(message);
@@ -111,7 +93,7 @@ static void retry_checks(void)
 }
 int main(void)
 {
-    parser_checks(); transfer_checks(); fragment_checks(); retry_checks();
+    parser_checks(); fragment_checks(); retry_checks();
     printf("Device MQTT protocol: %u checks passed\n", checks);
     return 0;
 }

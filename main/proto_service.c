@@ -197,14 +197,6 @@ size_t proto_build_preconnect_auth_frame(char *buf, size_t buf_size, const char 
     return needed;
 }
 
-static bool reminder_task_id_valid(const char *id)
-{
-    if (!id || !*id || strlen(id) > 128) return false;
-    for (const unsigned char *p = (const unsigned char *)id; *p; ++p)
-        if (*p < '0' || *p > '9') return false;
-    return true;
-}
-
 size_t proto_build_reminder_auth_frame(char *buf, size_t buf_size, const char *token,
                                        const char *device_id,
                                        const char *const *task_ids, size_t task_count)
@@ -215,7 +207,12 @@ size_t proto_build_reminder_auth_frame(char *buf, size_t buf_size, const char *t
         !device_id || !*device_id || strlen(device_id) > 64 || !task_ids ||
         task_count == 0 || task_count > PROTO_REMINDER_TASK_IDS_MAX) return 0;
     for (size_t i = 0; i < task_count; ++i)
-        if (!reminder_task_id_valid(task_ids[i])) return 0;
+    {
+        const char *id = task_ids[i];
+        if (!id || !*id || strlen(id) > 128) return 0;
+        for (const unsigned char *p = (const unsigned char *)id; *p; ++p)
+            if (*p < '0' || *p > '9') return 0;
+    }
 
     cJSON *root = cJSON_CreateObject();
     cJSON *ids = cJSON_CreateArray();
@@ -263,6 +260,8 @@ size_t proto_build_transfer_auth_frame(char *buf, size_t buf_size, const char *t
         cJSON_AddStringToObject(root, "api_key", token) &&
         cJSON_AddStringToObject(root, "device_id", device_id) &&
         cJSON_AddStringToObject(root, "join_ticket", join_ticket);
+      const char *dot = strchr(join_ticket + 3, '.');
+      if (!dot || dot == join_ticket + 3 || !dot[1] || strchr(dot + 1, '.')) ok = false;
     char *json = ok ? cJSON_PrintUnformatted(root) : NULL;
     size_t length = json ? strlen(json) : 0;
     if (!length || length >= buf_size) {

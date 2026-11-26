@@ -19,6 +19,8 @@ typedef struct {
     char device_id[65];
     unsigned count;
     char task_ids[DEVICE_TASK_QUEUE_SIZE][DEVICE_TASK_ID_MAX + 1];
+    char join_ticket[DEVICE_TASK_TICKET_MAX + 1];
+    char jti[128];
 } device_mqtt_delivery_t;
 /* worker 保存通知后供主任务领取；返回对象必须恰好 release 一次。
  * handled=true：已有鉴权会话接管，或用户明确取消，消费本地通知；
@@ -27,17 +29,8 @@ typedef struct {
  * 已有会话时平台直接推音频，主任务无需为这些 ID 再发 WebSocket 请求。 */
 device_mqtt_delivery_t *device_mqtt_service_take_tasks(void);
 void device_mqtt_service_release_tasks(device_mqtt_delivery_t *tasks, bool handled);
-
-typedef struct {
-    char device_id[65];
-    char transfer_id[DEVICE_TRANSFER_ID_MAX + 1];
-    char room_name[DEVICE_TRANSFER_ROOM_MAX + 1];
-    char ticket[DEVICE_TRANSFER_TICKET_MAX + 1];
-    int64_t expires_at_ms;
-    uint32_t timeout_sec;
-} device_mqtt_transfer_delivery_t;
-/* 转接通知不持久化、不排队到提醒任务存储；主线程取到后必须恰好 release 一次。 */
-device_mqtt_transfer_delivery_t *device_mqtt_service_take_transfer(void);
-void device_mqtt_service_release_transfer(device_mqtt_transfer_delivery_t *transfer, bool handled);
+/* 设备侧无法服务本次 MQTT 入站呼叫：在 ACK 主题回报失败原因。 */
+void device_mqtt_service_report_inbound_failure(const device_mqtt_delivery_t *tasks,
+                                                const char *reason, bool retryable);
 bool device_mqtt_service_voice_enabled(void);
 #endif

@@ -8,26 +8,15 @@
 #define DEVICE_TASK_PAYLOAD_MAX 4096u
 #define DEVICE_TASK_ID_MAX 128u
 #define DEVICE_TASK_QUEUE_SIZE 8u
-#define DEVICE_TRANSFER_ID_MAX 128u
-#define DEVICE_TRANSFER_ROOM_MAX 129u
-#define DEVICE_TRANSFER_TICKET_MAX 1024u
+#define DEVICE_TASK_TICKET_MAX 1024u
 
 typedef struct {
     char id[DEVICE_TASK_ID_MAX + 1];
+    char join_ticket[DEVICE_TASK_TICKET_MAX + 1];
+    char jti[128];
 } device_mqtt_task_t;
 
 bool device_mqtt_parse_task(const char *json, size_t length, device_mqtt_task_t *task);
-
-typedef struct {
-    char transfer_id[DEVICE_TRANSFER_ID_MAX + 1];
-    char room_name[DEVICE_TRANSFER_ROOM_MAX + 1];
-    char ticket[DEVICE_TRANSFER_TICKET_MAX + 1];
-    int64_t expires_at_ms;
-    uint32_t timeout_sec;
-} device_mqtt_transfer_t;
-/* 工单 05：转接通知独立解析。kind 必须为 transfer 且字段齐全；
- * 不修改、不放宽 reminder 解析器。 */
-bool device_mqtt_parse_transfer(const char *json, size_t length, device_mqtt_transfer_t *transfer);
 /* UTC 时间只校验格式，不用本地时间丢弃迟到任务。 */
 
 typedef struct {
