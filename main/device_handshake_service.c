@@ -638,6 +638,9 @@ void device_handshake_service_poll(bool network_available, bool allow_background
         return;
     }
     s_background_http_deferred = false;
+    if (s_http_reason) {
+        ESP_LOGI(TAG, "Deferred HTTP handshake resumed: reason=%s", s_http_reason);
+    }
     unsigned epoch = atomic_load(&s_network_epoch);
     if (network_available) s_last_online_ms = now_ms();
     if (epoch != s_seen_epoch || network_available != s_schedule.online) {
