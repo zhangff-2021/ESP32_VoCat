@@ -58,6 +58,8 @@
 
 static const char *TAG = "app_main";
 
+static bool wake_feed_allowed(void *user_data);
+
 /* ── 内部任务 & 队列 ────────────────────────────────────────── */
 
 static event_bus_t s_bus;
@@ -106,6 +108,7 @@ static esp_err_t system_init(void)
 
     ESP_ERROR_CHECK(ws_service_init());
     ESP_ERROR_CHECK(provisioning_service_init(s_bus));
+    wake_word_set_feed_gate(wake_feed_allowed, NULL);
     audio_in_config_t input_config = audio_in_default_config();
     input_config.bus = s_bus;
     if (!audio_in_create(&input_config)) return ESP_ERR_NO_MEM;
@@ -158,6 +161,12 @@ static bool transfer_session_requested;
 #define D3_PRECONNECT_RETRY_MS 10000
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
+
+static bool wake_feed_allowed(void *user_data)
+{
+    (void)user_data;
+    return d3_preconnect_ready && ws_service_get_state() == WS_STATE_PRECONNECTED;
+}
 
 static void release_reminder(bool handled)
 {

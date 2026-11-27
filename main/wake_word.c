@@ -30,6 +30,9 @@
 
 static const char *TAG = "wake_word";
 
+static bool (*s_feed_allowed)(void *user_data) = NULL;
+static void *s_feed_allowed_user_data = NULL;
+
 /* ===========================================================================
  * 全局状态
  * ========================================================================= */
@@ -219,6 +222,10 @@ static void feed_Task(void *arg)
         /* 从 I²S DMA 读取 PCM */
         int ret = audio_out_read_afe_input(afe_buff, input_bytes);
         if (ret == ESP_OK) {
+            if (s_feed_allowed && !s_feed_allowed(s_feed_allowed_user_data)) {
+                vTaskDelay(1);
+                continue;
+            }
             /* 五秒汇总峰值/削顶数，供首次实板核对 M/R 接线与增益；不逐帧打印。 */
             for (int i = 0; i < s_afe_chunksize; ++i) {
                 int m = abs((int)afe_buff[2 * i]);
@@ -557,6 +564,12 @@ void wake_word_set_callback(wake_word_detected_cb_t cb, void *user_data)
 {
     s_wake_cb     = cb;
     s_wake_cb_arg = user_data;
+}
+
+void wake_word_set_feed_gate(bool (*allowed)(void *user_data), void *user_data)
+{
+    s_feed_allowed = allowed;
+    s_feed_allowed_user_data = user_data;
 }
 
 void wake_word_reset(void)

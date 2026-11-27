@@ -158,6 +158,9 @@ wake_word_state_t wake_word_get_state(void);
  */
 void wake_word_set_callback(wake_word_detected_cb_t cb, void *user_data);
 
+/** 由 app_main 注册：预连接未就绪时暂停 AFE feed，避免启动期 ringbuffer 溢出。 */
+void wake_word_set_feed_gate(bool (*allowed)(void *user_data), void *user_data);
+
 /**
  * @brief 重置唤醒状态（从 DETECTED → IDLE，准备下一轮唤醒检测）
  *
