@@ -62,6 +62,7 @@ static const char *TAG = "device_handshake";
 #define DEVICE_HANDSHAKE_CACHE_FW_KEY "ws_fw_v4"
 #define DEVICE_HANDSHAKE_CACHE_MAGIC 0x44335753u
 #define DEVICE_HANDSHAKE_CACHE_VERSION 4u
+#define DEVICE_HANDSHAKE_MAX_CACHE_AGE_MS (12LL * 60LL * 60LL * 1000LL)
 static device_handshake_config_t *s_config;
 static device_handshake_schedule_t s_schedule;
 static bool s_initialized, s_pending, s_disabled;
@@ -154,6 +155,17 @@ static bool cached_credentials_valid(const device_handshake_response_t *response
         remaining = (int64_t)response->websocket.expires_in * 1000;
     }
     return remaining >= (int64_t)DEVICE_HANDSHAKE_CACHE_MARGIN_SECONDS * 1000;
+}
+
+static bool cached_credentials_needs_age_refresh(const handshake_attempt_t *attempt)
+{
+    if (!attempt || !attempt->from_cache) return false;
+    int64_t current_unix_ms = unix_now_ms();
+    if (current_unix_ms <= 0 || attempt->acquired_unix_ms <= 0) return false;
+    if (system_time_unsynced(current_unix_ms) && current_unix_ms < attempt->acquired_unix_ms) {
+        return false;
+    }
+    return current_unix_ms - attempt->acquired_unix_ms >= DEVICE_HANDSHAKE_MAX_CACHE_AGE_MS;
 }
 
 void device_handshake_service_clear_cached_credentials(void)
@@ -690,8 +702,16 @@ void device_handshake_service_poll(bool network_available, bool allow_background
         }
         if (finished != s_snapshot) release_attempt(finished);
     }
-    if (!s_config || !s_config->enabled || s_pending || !device_handshake_due(&s_schedule, now_ms()))
+    if (!s_config || !s_config->enabled || s_pending) return;
+    if (!s_http_reason && cached_credentials_needs_age_refresh(s_snapshot)) {
+        s_http_reason = "cache_age_over_12h";
+        ESP_LOGI(TAG, "HTTP refresh due: cached credentials older than 12h");
+        device_handshake_renew(&s_schedule);
+        atomic_store(&s_cancel_generation, s_schedule.generation);
+    }
+    if (!device_handshake_due(&s_schedule, now_ms())) {
         return;
+    }
     if (!s_http_reason) s_http_reason = "credentials_missing";
     if (!s_preconnect_started && s_snapshot && s_snapshot->from_cache)
         s_preconnect_started = true;
