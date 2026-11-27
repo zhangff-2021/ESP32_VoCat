@@ -66,6 +66,7 @@ static device_handshake_config_t *s_config;
 static device_handshake_schedule_t s_schedule;
 static bool s_initialized, s_pending, s_disabled;
 static bool s_preconnect_started;
+static bool s_background_http_deferred;
 static QueueHandle_t s_jobs, s_results;
 static esp_event_handler_instance_t s_wifi_handler, s_ip_handler;
 /* 回调只改变 epoch，不触碰主任务的状态或做网络 I/O。
@@ -601,9 +602,17 @@ device_ws_readiness_t device_handshake_service_prepare_websocket(
     return DEVICE_WS_READY;
 }
 
-void device_handshake_service_poll(bool network_available)
+void device_handshake_service_poll(bool network_available, bool allow_background_http)
 {
     if (!s_initialized) return;
+    if (!allow_background_http) {
+        if (!s_background_http_deferred) {
+            ESP_LOGI(TAG, "HTTP handshake deferred: device busy");
+            s_background_http_deferred = true;
+        }
+        return;
+    }
+    s_background_http_deferred = false;
     unsigned epoch = atomic_load(&s_network_epoch);
     if (network_available) s_last_online_ms = now_ms();
     if (epoch != s_seen_epoch || network_available != s_schedule.online) {

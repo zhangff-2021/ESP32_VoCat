@@ -171,6 +171,14 @@ static bool wake_feed_allowed(void *user_data)
     return d3_preconnect_ready && ws_service_get_state() == WS_STATE_PRECONNECTED;
 }
 
+static bool background_http_allowed(void)
+{
+    if (provisioning_service_is_active()) return false;
+    if (session_requested || conversation_active || cleanup_pending || reminder_task) return false;
+    ws_conn_state_t state = ws_service_get_state();
+    return state == WS_STATE_DISCONNECTED || state == WS_STATE_PRECONNECTED;
+}
+
 static void release_reminder(bool handled)
 {
     if (!reminder_task) return;
@@ -950,7 +958,8 @@ static void main_task(void *arg)
         int64_t now = now_ms();
         if (cleanup_pending && now >= cleanup_at_ms) stop_session_audio();
         device_handshake_service_poll(wifi_service_get_state() == WIFI_STATE_GOT_IP &&
-                                      !provisioning_service_is_active());
+                                      !provisioning_service_is_active(),
+                                      background_http_allowed());
         prepare_standby_websocket();
         device_mqtt_service_set_dispatch_allowed(
             wifi_service_get_state() == WIFI_STATE_GOT_IP &&
