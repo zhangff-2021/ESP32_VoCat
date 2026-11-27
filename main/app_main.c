@@ -874,14 +874,6 @@ static void main_task(void *arg)
                     device_mqtt_service_set_network_active(true);
                     ESP_LOGI(TAG, "D3 standby ready; starting deferred MQTT connection");
                 }
-                if (!wake_word_is_running()) {
-                    esp_err_t started = wake_word_start();
-                    if (started == ESP_OK)
-                        ESP_LOGI(TAG, "D3 standby ready; starting deferred wake detection");
-                    else
-                        ESP_LOGE(TAG, "Deferred wake detection start failed: %s",
-                                 esp_err_to_name(started));
-                }
                 ESP_LOGI(TAG, "D3 WebSocket preconnected; expires_in=%us refresh_in=%llds",
                          (unsigned)ws_service_get_preconnect_expires_in(),
                          (long long)((d3_preconnect_deadline_ms - now_ms()) / 1000));
@@ -932,10 +924,7 @@ static void main_task(void *arg)
                 recover_session("audio upload failed");
                 break;
             case EV_AUDIO_WAKE_DETECTED:
-                if (!d3_preconnect_ready || ws_service_get_state() != WS_STATE_PRECONNECTED) {
-                    wake_word_reset();
-                    ESP_LOGI(TAG, "Wake ignored: D3 preconnect not ready");
-                } else if (!session_requested) {
+                if (!session_requested) {
                     device_mqtt_service_on_wake();
                     start_conversation("wake word");
                 }
