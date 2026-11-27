@@ -228,7 +228,8 @@ static void schedule_checks(void)
     uint32_t stale = state.generation;
     device_handshake_network_changed(&state, false);
     device_handshake_network_changed(&state, true);
-    CHECK(!state.ready && !device_handshake_complete(&state, stale, 200, true, 200000));
+    CHECK(state.ready && !device_handshake_due(&state, 200000));
+    CHECK(!device_handshake_complete(&state, stale, 200, true, 200000));
     const int permanent[] = { 401, 403, 404, 301, 400, 200 };
     for (size_t i = 0; i < sizeof(permanent) / sizeof(permanent[0]); ++i) {
         device_handshake_refresh(&state);

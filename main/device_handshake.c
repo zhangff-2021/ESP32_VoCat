@@ -306,8 +306,8 @@ void device_handshake_network_changed(device_handshake_schedule_t *state, bool o
 {
     ++state->generation;
     state->online = online;
-    state->ready = false;
-    /* 保留 blocked 和退避截止时间：抖动不能绕过 401/403/404 或不断重置重试。 */
+    /* 网络变化只让旧 HTTP 结果失效；有效凭证缓存继续用于 WSS/MQTT 恢复。
+     * 保留 ready/blocked 和退避截止时间：抖动不能绕过 401/403/404 或触发无谓 HTTP。 */
 }
 
 void device_handshake_refresh(device_handshake_schedule_t *state)
