@@ -547,10 +547,16 @@ static void handle_talk_action(const char *reason)
     if (session_requested) {
         release_reminder(true); /* 用户拒绝本次唤醒，不能又被同一通知自动拉起。 */
         end_conversation(reason);
-    } else {
-        device_mqtt_service_on_wake();
-        start_conversation(reason);
+        return;
     }
+    if (ws_service_get_state() != WS_STATE_PRECONNECTED || !d3_preconnect_ready) {
+        wake_word_reset();
+        ESP_LOGI(TAG, "Touch ignored: D3 preconnect not ready, state=%d ready=%d",
+                 ws_service_get_state(), d3_preconnect_ready);
+        return;
+    }
+    device_mqtt_service_on_wake();
+    start_conversation(reason);
 }
 
 static esp_err_t start_saved_wifi(void)
