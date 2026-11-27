@@ -473,26 +473,13 @@ esp_err_t wake_word_init(void)
              WAKE_WORD_RB_ITEM_COUNT, WAKE_WORD_RB_ITEM_SIZE,
              (int)WAKE_WORD_RB_TOTAL_SIZE);
 
-    /* ── 7. 启动 feed_Task + detect_Task ────────────────── */
-    /* Set active handle BEFORE starting tasks (CRITICAL: otherwise tasks see NULL handle) */
+    /* ── 7. 任务延迟启动 ────────────────────────────────── */
+    /* 启动阶段 Wi-Fi/TLS/HTTP 会占用 CPU；feed/detect 等 D3 预连接成功后
+     * 再由 app_main 调用 wake_word_start()，避免 AFE(FEED) ringbuffer 溢出。 */
     s_afe_data = s_afe_data_wake;
     s_mode = WAKE_WORD_MODE_WAKE;
-
-    s_task_running = true;
-    BaseType_t t0 = xTaskCreatePinnedToCore(
-        feed_Task, "ww_feed",
-        WAKE_WORD_FEED_STACK, NULL, 5, &s_feed_task_h, 0);
-    BaseType_t t1 = xTaskCreatePinnedToCore(
-        detect_Task, "ww_detect",
-        WAKE_WORD_DETECT_STACK, NULL, 5, &s_detect_task_h, 1);
-
-    if (t0 != pdPASS || t1 != pdPASS) {
-        ESP_LOGE(TAG, "task creation failed (feed=%d detect=%d)", t0, t1);
-        s_task_running = false;
-        return ESP_ERR_NO_MEM;
-    }
-
-    ESP_LOGI(TAG, "WakeWord initialized — feed (core0) + detect (core1) running");
+    s_task_running = false;
+    ESP_LOGI(TAG, "WakeWord initialized — feed/detect deferred until D3 preconnect");
     return ESP_OK;
 }
 
@@ -648,6 +635,11 @@ esp_err_t wake_word_start(void)
     }
     ESP_LOGI(TAG, "WakeWord tasks restarted (AFE preserved)");
     return ESP_OK;
+}
+
+bool wake_word_is_running(void)
+{
+    return s_task_running;
 }
 
 void wake_word_stop(void)

@@ -87,6 +87,9 @@ esp_err_t wake_word_init(void);
  */
 esp_err_t wake_word_start(void);
 
+/** feed/detect 任务是否正在运行（仅查询，不启动）。 */
+bool wake_word_is_running(void);
+
 /**
  * @brief 停止唤醒词检测任务（保留 AFE handle，可快速 restart）
  * @note 仅停止任务；AFE 和 ring buffer 保留，wake_word_start() 可重新启动。
