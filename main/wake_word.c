@@ -290,6 +290,11 @@ static void detect_Task(void *arg)
     ESP_LOGI(TAG, "Platform interruption enabled; local VAD never cancels playback");
 
     while (s_task_running) {
+        if (s_feed_allowed && !s_feed_allowed(s_feed_allowed_user_data)) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
         /* 从 AFE 取回处理结果 */
         afe_fetch_result_t *res = s_afe_iface->fetch(s_afe_data);
 

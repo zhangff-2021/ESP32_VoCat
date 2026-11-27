@@ -165,6 +165,9 @@ static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 static bool wake_feed_allowed(void *user_data)
 {
     (void)user_data;
+    if (session_requested || conversation_active || cleanup_pending) {
+        return true;
+    }
     return d3_preconnect_ready && ws_service_get_state() == WS_STATE_PRECONNECTED;
 }
 
