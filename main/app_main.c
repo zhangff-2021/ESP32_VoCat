@@ -981,13 +981,11 @@ static void main_task(void *arg)
             d3_preconnect_ready = false;
             d3_preconnect_deadline_ms = 0;
             d3_retry_pending = false;
-            d3_preconnect_url[0] = 0;
-            d3_preconnect_token[0] = 0;
             retry_at_ms = 0;
             standby_retry_at_ms = 0;
             auth_deadline_ms = 0;
             (void)ws_service_disconnect();
-            ESP_LOGI(TAG, "D3 preconnect refresh window reached; reconnecting");
+            ESP_LOGI(TAG, "D3 preconnect refresh window reached; reconnecting WSS with cached credentials");
         }
         if (auth_deadline_ms && now >= auth_deadline_ms) {
             if (awaiting_voice_auth) handle_voice_auth_failure("gateway authentication timed out");
