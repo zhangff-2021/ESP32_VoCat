@@ -466,7 +466,7 @@ static bool ensure_worker(void)
     s_jobs = xQueueCreate(1, sizeof(handshake_attempt_t *));
     s_results = xQueueCreate(1, sizeof(handshake_attempt_t *));
     if (s_jobs && s_results &&
-        xTaskCreatePinnedToCore(handshake_worker, "device_http", 8192, NULL, 2, NULL, 0) == pdPASS)
+        xTaskCreate(handshake_worker, "device_http", 8192, NULL, 2, NULL) == pdPASS)
         return true;
     if (s_jobs) vQueueDelete(s_jobs);
     if (s_results) vQueueDelete(s_results);
