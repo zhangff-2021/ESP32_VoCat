@@ -105,13 +105,18 @@ bool device_mqtt_parse_task(const char *json, size_t length, device_mqtt_task_t 
     if (!root) return false;
     while (end < json + length && strchr(" \t\r\n", *end)) ++end;
     bool ok = end == json + length && cJSON_IsObject(root);
+    const cJSON *kind = cJSON_GetObjectItemCaseSensitive(root, "kind");
+    bool transfer_kind = kind && cJSON_IsString(kind) &&
+                         !strcmp(kind->valuestring, "transfer");
     for (const cJSON *field = root->child; ok && field; field = field->next) {
-        if (!cJSON_IsString(field)) { ok = false; break; }
+        /* 平台转接载荷带数字型 timeout_sec；提醒载荷必须全字段是字符串。 */
+        bool numeric_allowed = transfer_kind && field->string &&
+            !strcmp(field->string, "timeout_sec") && cJSON_IsNumber(field);
+        if (!cJSON_IsString(field) && !numeric_allowed) { ok = false; break; }
         for (const cJSON *other = field->next; other; other = other->next)
             if (!strcmp(field->string, other->string)) ok = false;
     }
     const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "task_id");
-    const cJSON *kind = cJSON_GetObjectItemCaseSensitive(root, "kind");
     const cJSON *content = cJSON_GetObjectItemCaseSensitive(root, "content");
     const cJSON *fire = cJSON_GetObjectItemCaseSensitive(root, "fire_at");
     const cJSON *ticket = cJSON_GetObjectItemCaseSensitive(root, "join_ticket");

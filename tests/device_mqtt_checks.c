@@ -9,6 +9,11 @@ static unsigned checks;
 static const char *message = "{\"task_id\":\"42\",\"kind\":\"reminder\",\"content\":\"该吃午饭了\",\"fire_at\":\"2020-11-03T06:00:00.000Z\"}";
 static const char *transfer = "{\"task_id\":\"tr-1\",\"kind\":\"transfer\","
     "\"join_ticket\":\"v2.eyJqIjoiam9pbi1qdGktMSJ9.sig\"}";
+static const char *platform_transfer = "{\"kind\":\"transfer\",\"transfer_id\":\"tr-2\","
+    "\"task_id\":\"tr-2\",\"room_name\":\"gw-44198986\","
+    "\"join_ticket\":\"v2.eyJqIjoiam9pbi1qdGktMiJ9.sig\","
+    "\"jti\":\"join-jti-2\",\"expires_at\":\"2026-11-27T02:00:00.000Z\","
+    "\"timeout_sec\":30}";
 
 static void parser_checks(void)
 {
@@ -27,6 +32,9 @@ static void parser_checks(void)
     CHECK(device_mqtt_parse_task(transfer, strlen(transfer), &task));
     CHECK(!strcmp(task.id, "tr-1") && !strcmp(task.join_ticket, "v2.eyJqIjoiam9pbi1qdGktMSJ9.sig"));
     CHECK(!strcmp(task.jti, "join-jti-1"));
+    CHECK(device_mqtt_parse_task(platform_transfer, strlen(platform_transfer), &task));
+    CHECK(!strcmp(task.id, "tr-2") && !strcmp(task.join_ticket,
+          "v2.eyJqIjoiam9pbi1qdGktMiJ9.sig") && !strcmp(task.jti, "join-jti-2"));
     const char *invalid_transfer = "{\"task_id\":\"tr-1\",\"kind\":\"transfer\","
         "\"join_ticket\":\"bad.payload.sig\"}";
     CHECK(!device_mqtt_parse_task(invalid_transfer, strlen(invalid_transfer), &task));
