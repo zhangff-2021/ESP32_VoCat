@@ -800,12 +800,12 @@ static void main_task(void *arg)
                 d3_preconnect_ready = false;
                 d3_preconnect_deadline_ms = 0;
                 d3_retry_pending = false;
-                d3_preconnect_url[0] = 0;
-                d3_preconnect_token[0] = 0;
                 if (device_handshake_service_prepare_websocket(&cached_configuration) == DEVICE_WS_READY) {
                     ESP_LOGI(TAG, "Wi-Fi ready; reusing cached credentials for D3 preconnect");
                     prepare_standby_websocket();
                 } else {
+                    d3_preconnect_url[0] = 0;
+                    d3_preconnect_token[0] = 0;
                     device_handshake_service_renew_credentials();
                 }
                 /* D3 主链路：联网后立即建立 WSS 预连接；重复 IP 事件不能打断正在进行的对话。 */

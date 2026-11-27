@@ -67,6 +67,7 @@ static device_handshake_schedule_t s_schedule;
 static bool s_initialized, s_pending, s_disabled;
 static bool s_preconnect_started;
 static bool s_background_http_deferred;
+static const char *s_http_reason;
 static QueueHandle_t s_jobs, s_results;
 static esp_event_handler_instance_t s_wifi_handler, s_ip_handler;
 /* 回调只改变 epoch，不触碰主任务的状态或做网络 I/O。
@@ -556,6 +557,7 @@ bool device_handshake_service_renew_credentials(void)
 {
     if (!s_initialized || s_disabled || !device_handshake_renew(&s_schedule)) return false;
     atomic_store(&s_cancel_generation, s_schedule.generation);
+    s_http_reason = "credential_renew";
     clear_snapshot();
     return true;
 }
@@ -575,12 +577,14 @@ device_ws_readiness_t device_handshake_service_prepare_websocket(
         if (strcmp(s_config->device_id, ready->mqtt.username) != 0) {
             device_handshake_service_clear_cached_credentials();
             clear_snapshot();
+            s_http_reason = "device_id_mismatch";
             return DEVICE_WS_WAITING;
         }
         if (!cached_credentials_valid(ready, s_snapshot->acquired_unix_ms, true)) {
             device_handshake_service_clear_cached_credentials();
             clear_snapshot();
             device_handshake_service_renew_credentials();
+            s_http_reason = "cached_credentials_invalid";
             return DEVICE_WS_WAITING;
         }
         int64_t unix_remaining = device_handshake_token_remaining_ms(
@@ -595,6 +599,7 @@ device_ws_readiness_t device_handshake_service_prepare_websocket(
             ESP_LOGI(TAG, "WebSocket token near expiry (%lld s); renewing before connect",
                      (long long)(remaining / 1000));
             device_handshake_service_renew_credentials();
+            s_http_reason = "token_below_refresh_margin";
             return DEVICE_WS_WAITING;
         }
     }
@@ -670,6 +675,7 @@ void device_handshake_service_poll(bool network_available, bool allow_background
             ESP_LOGE(TAG, "HTTP %d: %s; stopped until explicit configuration refresh/reboot",
                      result->status, result->reason);
         } else {
+            s_http_reason = "http_retry_backoff";
             ESP_LOGW(TAG, "HTTP %d: %s; retry in %u ms", result->status, result->reason,
                      device_handshake_retry_delay_ms(s_schedule.failures));
         }
@@ -677,6 +683,7 @@ void device_handshake_service_poll(bool network_available, bool allow_background
     }
     if (!s_config || !s_config->enabled || s_pending || !device_handshake_due(&s_schedule, now_ms()))
         return;
+    if (!s_http_reason) s_http_reason = "credentials_missing";
     if (!s_preconnect_started && s_snapshot && s_snapshot->from_cache)
         s_preconnect_started = true;
     if (s_preconnect_started) {
@@ -701,5 +708,6 @@ void device_handshake_service_poll(bool network_available, bool allow_background
         return;
     }
     s_pending = true;
-    ESP_LOGI(TAG, "HTTP handshake started");
+    ESP_LOGI(TAG, "HTTP handshake started: reason=%s", s_http_reason ? s_http_reason : "unknown");
+    s_http_reason = NULL;
 }
