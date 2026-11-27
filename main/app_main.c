@@ -509,6 +509,7 @@ static void start_conversation(const char *reason)
         return; /* 连接中或会话中重复按键不重复发送请求。 */
     }
     session_requested = true;
+    device_handshake_service_cancel_inflight();
     resume_deadline_ms = now_ms() + 60000;
     voice_auth_refresh_used = awaiting_voice_auth = waiting_for_credentials = false;
     if (wake_word_set_mode(WAKE_WORD_MODE_LITE) != ESP_OK) {

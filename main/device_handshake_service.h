@@ -40,6 +40,10 @@ bool device_handshake_service_is_blocked(void);
 /* 鉴权拒绝后由主任务有限次数调用；不重读身份、不解除 HTTP 永久错误。 */
 bool device_handshake_service_renew_credentials(void);
 
+/* 唤醒/进入会话时调用：递增取消代次，使在途 HTTP 结果返回后被丢弃。
+ * 不中断 TLS 握手，不清除凭证缓存，也不改变永久错误状态。 */
+void device_handshake_service_cancel_inflight(void);
+
 /* 主任务访问：显式重读身份/网络代次变化时递增，单纯 WS token 续期不变。
  * MQTT 可保留自己的凭据副本，但不能跨身份或网络代次继续使用旧配置。 */
 unsigned device_handshake_service_mqtt_epoch(void);

@@ -562,6 +562,14 @@ bool device_handshake_service_renew_credentials(void)
     return true;
 }
 
+void device_handshake_service_cancel_inflight(void)
+{
+    if (!s_initialized || !s_pending) return;
+    atomic_fetch_add(&s_cancel_generation, 1);
+    s_http_reason = NULL;
+    ESP_LOGI(TAG, "HTTP result will be discarded: conversation started");
+}
+
 device_ws_readiness_t device_handshake_service_prepare_websocket(
     const device_handshake_response_t **configuration)
 {
@@ -642,9 +650,10 @@ void device_handshake_service_poll(bool network_available, bool allow_background
             result->reason = "websocket_token_lifetime_too_short";
         }
         bool current = finished->network_epoch == atomic_load(&s_network_epoch) &&
+                       finished->generation == atomic_load(&s_cancel_generation) &&
                        device_handshake_complete(&s_schedule, finished->generation,
                                                   result->status, result->success, now_ms());
-        if (!current) ESP_LOGI(TAG, "Discarded obsolete HTTP result");
+        if (!current) ESP_LOGI(TAG, "Discarded obsolete HTTP result (network or generation changed)");
         else if (result->success) {
             clear_snapshot();
             s_snapshot = finished;
